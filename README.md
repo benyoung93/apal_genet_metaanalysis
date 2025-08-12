@@ -8,7 +8,7 @@ Young et al (2024) - https://www.nature.com/articles/s41598-024-80479-y
 
 *Acropora palmata* chromosome genome link - https://www.ncbi.nlm.nih.gov/datasets/genome/GCA_964030605.3/  
 
-**apal_genet_metaanalysis.Rmd** - Analyses used for the manuscrupt (e.g. DAPC, wgcna, etc etc).
+**apal_genet_metaanalysis.Rmd** - Analyses used for the manuscrupt (e.g. DAPC, wgcna, etc etc).  
 **unix_processing** - Raw reads through to alignment, and gene prediciton and annotation of the *Acropora palmata* genome.  
 
 Directories  
