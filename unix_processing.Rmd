@@ -1,0 +1,1444 @@
+---
+title: "genet_analysis"
+output: html_document
+date: "2025-04-17"
+---
+
+## 1. Downloading Reads for Analysis
+
+Young et al 2020 - PRJNA529682 (https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0228514)
+Young et al 2023 - PRJNA895002 (https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0286293#sec030)
+Young et al 2024 - PRJNA1081901 (https://www.nature.com/articles/s41598-024-80479-y#data-availability)
+
+```{bash installing sra toolkit}
+mamba create -n sratools_env -c bioconda sra-tools
+mamba activate sratools_env
+mamba install -c bioconda entrez-direct
+```
+
+```{bash getting the information before downloading}
+mamba activate sratools_env
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads
+
+esearch -db bioproject -query PRJNA529682 | \
+elink -target sra | \
+efetch -format runinfo > young2020.csv
+
+esearch -db bioproject -query PRJNA895002 | \
+elink -target sra | \
+efetch -format runinfo > young2023.csv
+
+esearch -db bioproject -query PRJNA1081901 | \
+elink -target sra | \
+efetch -format runinfo > young2024.csv
+
+cut -d ',' -f 1 young2020.csv | grep "^SRR" > young2020.txt
+cut -d ',' -f 1 young2023.csv | grep "^SRR" > young2023.txt
+cut -d ',' -f 1 young2024.csv | grep "^SRR" > young2024.txt
+```
+
+```{bash downloading all the reads}
+#!/bin/bash
+#SBATCH --time=16:00:00
+#SBATCH --account=ucb423_asc2
+#SBATCH --nodes=1
+#SBATCH --mem=60G
+#SBATCH --ntasks=5
+#SBATCH --cpus-per-task=2
+#SBATCH --job-name=read_download
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/raw_reads/download.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/raw_reads/download.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+module purge
+eval "$(conda shell.bash hook)" 
+conda activate sratools_env
+
+export TMP=/scratch/alpine/beyo2625/temp_space
+export TEMP=/scratch/alpine/beyo2625/temp_space
+export TMPDIR=/scratch/alpine/beyo2625/temp_space 
+export TEMPDIR=/scratch/alpine/beyo2625/temp_space
+export temp_directory=/scratch/alpine/beyo2625/temp_space
+
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads
+
+## young et al 2020
+cd young2020
+cat ../young2020.txt | xargs -n 1 prefetch
+for sra in $(cat ../young2020.txt); do
+    fasterq-dump $sra --split-files
+done
+
+## young et al 2023
+cd ../young2023
+cat ../young2023.txt | xargs -n 1 prefetch
+for sra in $(cat ../young2023.txt); do
+    fasterq-dump $sra --split-files
+done
+
+## young et al 2024
+cd ../young2024
+cat ../young2024.txt | xargs -n 1 prefetch
+for sra in $(cat ../young2024.txt); do
+    fasterq-dump $sra --split-files
+done
+```
+
+Okay so this will also download all the microbiome samples, so need to delete all the _1, _2 and directories for these
+
+```{bash deleting the microbiome reads}
+## 2023 paper
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2023
+for file in *_2.fastq; do
+  base=$(echo "$file" | sed 's/_2.fastq//')
+  echo "Deleting: ${base}_1.fastq, ${base}_2.fastq, $base"
+  rm -f "${base}_1.fastq" "${base}_2.fastq"
+  rm -rf "$base"
+done
+
+## 2024 paper
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2024
+for file in *_2.fastq; do
+  base=$(echo "$file" | sed 's/_2.fastq//')
+  echo "Deleting: ${base}_1.fastq, ${base}_2.fastq, $base"
+  rm -f "${base}_1.fastq" "${base}_2.fastq"
+  rm -rf "$base"
+done
+```
+
+```{bash deleting the directories with the sqlite things in them}
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2020
+for f in *.fastq; do
+  base=$(basename "$f" .fastq)
+  if [ -d "$base" ]; then
+    echo "Deleting directory: $base"
+    rm -rf "$base"
+  fi
+done
+
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2023
+for f in *_1.fastq; do
+  base=$(basename "$f" _1.fastq)
+  if [ -d "$base" ]; then
+    echo "Deleting directory: $base"
+    rm -rf "$base"
+  fi
+done
+
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2024
+for f in *.fastq; do
+  base=$(basename "$f" .fastq)
+  if [ -d "$base" ]; then
+    echo "Deleting directory: $base"
+    rm -rf "$base"
+  fi
+done
+```
+
+
+## 2. FastQC
+
+Did not run as I looked at my papers and knew these steps needed to be done. 
+
+## 3. Trimgalore
+
+```{bash trimming 2020}
+#!/bin/bash
+#SBATCH --time=00:10:00
+#SBATCH --account=ucb423_asc2
+#SBATCH --nodes=1
+#SBATCH --mem=2G
+#SBATCH --job-name=trim2020
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/muscle.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/muscle.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2020
+PALMATA=$(ls *.fastq | sed 's/\.fastq$//')
+
+echo "files going through trimgalore"
+echo $PALMATA
+
+for PALPAL in $PALMATA
+do
+echo "$PALPAL"
+echo '#!/bin/bash' > /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --account=ucb423_asc2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --time=12:00:00' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --nodes=1' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --mem=20G' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --ntasks=5' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --cpus-per-task=2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --job-name='"$PALPAL"'_trim' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/'"$PALPAL"'_trim.err' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/'"$PALPAL"'_trim.out' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --mail-type=ALL' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --mail-user=beyo2625@colorado.edu' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+
+echo 'module purge' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo 'eval "$(conda shell.bash hook)"' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+echo 'conda activate trimgalore_env' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+
+echo 'cd /scratch/alpine/beyo2625/apal_genet' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+
+echo 'trim_galore \
+--fastqc \
+--basename '"${PALPAL}"' \
+--output_dir /scratch/alpine/beyo2625/apal_genet/trim/young2020/'"${PALPAL}"' \
+--cores 10 \
+/scratch/alpine/beyo2625/apal_genet/raw_reads/young2020/'"${PALPAL}"'.fastq' >> /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+sbatch /scratch/alpine/beyo2625/apal_genet/trim/young2020/loop_err_out/"$PALPAL"_tg.sh
+done
+```
+*Done 17th April 2025*
+
+For 2023 and 2024 need to also trim polyA tails as it was 3 prime RNA-seq. There is a option in `trimgalore` for this yay. 
+
+--polyA                 This is a new, still experimental, trimming mode to identify and remove poly-A tails from sequences.
+                        When --polyA is selected, Trim Galore attempts to identify from the first supplied sample whether
+                        sequences contain more often a stretch of either 'AAAAAAAAAA' or 'TTTTTTTTTT'. This determines
+                        if Read 1 of a paired-end end file, or single-end files, are trimmed for PolyA or PolyT. In case of
+                        paired-end sequencing, Read2 is trimmed for the complementary base from the start of the reads. The
+                        auto-detection uses a default of A{20} for Read1 (3'-end trimming) and T{150} for Read2 (5'-end trimming).
+                        These values may be changed manually using the options -a and -a2.
+
+                        In addition to trimming the sequences, white spaces are replaced with _ and it records in the read ID
+                        how many bases were trimmed so it can later be used to identify PolyA trimmed sequences. This is currently done
+                        by writing tags to both the start ("32:A:") and end ("_PolyA:32") of the reads in the following example:
+
+                        @READ-ID:1:1102:22039:36996 1:N:0:CCTAATCC
+                        GCCTAAGGAAACAAGTACACTCCACACATGCATAAAGGAAATCAAATGTTATTTTTAAGAAAATGGAAAATAAAAACTTTATAAACACCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+                        @32:A:READ-ID:1:1102:22039:36996_1:N:0:CCTAATCC_PolyA:32
+                        GCCTAAGGAAACAAGTACACTCCACACATGCATAAAGGAAATCAAATGTTATTTTTAAGAAAATGGAAAATAAAAACTTTATAAACACC
+
+                        PLEASE NOTE: The poly-A trimming mode expects that sequences were both adapter and quality trimmed
+                        before looking for Poly-A tails, and it is the user's responsibility to carry out an initial round of
+                        trimming. The following sequence:
+ 
+                        1) trim_galore file.fastq.gz
+                        2) trim_galore --polyA file_trimmed.fq.gz
+                        3) zcat file_trimmed_trimmed.fq.gz | grep -A 3 PolyA | grep -v ^-- > PolyA_trimmed.fastq
+
+                        Will 1) trim qualities and Illumina adapter contamination, 2) find and remove PolyA contamination.
+                        Finally, if desired, 3) will specifically find PolyA trimmed sequences to a specific FastQ file of your choice.
+
+```{bash trimming 2023}
+#!/bin/bash
+#SBATCH --time=00:10:00
+#SBATCH --account=ucb423_asc2
+#SBATCH --nodes=1
+#SBATCH --mem=2G
+#SBATCH --job-name=trim2023
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/trim2023.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/trim2023.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2023
+PALMATA=$(ls *_1.fastq | sed 's/_1\.fastq$//')
+
+echo "files going through trimgalore"
+echo $PALMATA
+
+for PALPAL in $PALMATA
+do
+echo "$PALPAL"
+echo '#!/bin/bash' > /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --account=ucb423_asc2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --time=12:00:00' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --nodes=1' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --mem=20G' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --ntasks=5' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --cpus-per-task=2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --job-name='"$PALPAL"'_trim' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/'"$PALPAL"'_trim.err' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/'"$PALPAL"'_trim.out' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --mail-type=ALL' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --mail-user=beyo2625@colorado.edu' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+
+echo 'module purge' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo 'eval "$(conda shell.bash hook)"' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+echo 'conda activate trimgalore_env' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+
+echo 'cd /scratch/alpine/beyo2625/apal_genet' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+
+echo 'trim_galore \
+--fastqc \
+--basename '"${PALPAL}"' \
+--output_dir /scratch/alpine/beyo2625/apal_genet/trim/young2023/'"${PALPAL}"' \
+--cores 10 \
+/scratch/alpine/beyo2625/apal_genet/raw_reads/young2023/'"${PALPAL}"'_1.fastq' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+sbatch /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg.sh
+done
+```
+*Done 17th April 2025*
+
+```{bash poly a trimming 2023}
+#!/bin/bash
+#SBATCH --time=00:10:00
+#SBATCH --account=ucb423_asc2
+#SBATCH --nodes=1
+#SBATCH --mem=2G
+#SBATCH --job-name=trim2023_poly
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/trim2023_poly.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/trim2023_poly.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2023
+PALMATA=$(ls *_1.fastq | sed 's/_1\.fastq$//')
+
+echo "files going through trimgalore"
+echo $PALMATA
+
+for PALPAL in $PALMATA
+do
+echo "$PALPAL"
+echo '#!/bin/bash' > /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --account=ucb423_asc2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --time=12:00:00' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --nodes=1' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --mem=20G' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --ntasks=5' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --cpus-per-task=2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --job-name='"$PALPAL"'_trim' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/'"$PALPAL"'_trim_poly.err' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/'"$PALPAL"'_trim_poly.out' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --mail-type=ALL' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --mail-user=beyo2625@colorado.edu' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+
+echo 'module purge' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo 'eval "$(conda shell.bash hook)"' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+echo 'conda activate trimgalore_env' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+
+echo 'cd /scratch/alpine/beyo2625/apal_genet/trim/young2023/'"${PALPAL}"'' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+
+echo 'trim_galore \
+--fastqc \
+--output_dir ./ \
+--polyA \
+--basename '"${PALPAL}"'_poly \
+'"${PALPAL}"'_trimmed.fq' >> /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+sbatch /scratch/alpine/beyo2625/apal_genet/trim/young2023/loop_err_out/"$PALPAL"_tg_poly.sh
+done
+```
+*Done 17th April 2025*
+
+```{bash trimming 2024}
+#!/bin/bash
+#SBATCH --time=00:10:00
+#SBATCH --account=ucb423_asc2
+#SBATCH --nodes=1
+#SBATCH --mem=2G
+#SBATCH --job-name=trim2023
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/trim2023.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/trim2023.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2024
+PALMATA=$(ls *.fastq | sed 's/\.fastq$//')
+
+echo "files going through trimgalore"
+echo $PALMATA
+
+for PALPAL in $PALMATA
+do
+echo "$PALPAL"
+echo '#!/bin/bash' > /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --account=ucb423_asc2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --time=12:00:00' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --nodes=1' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --mem=20G' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --ntasks=5' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --cpus-per-task=2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --job-name='"$PALPAL"'_trim' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/'"$PALPAL"'_trim.err' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/'"$PALPAL"'_trim.out' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --mail-type=ALL' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo '#SBATCH --mail-user=beyo2625@colorado.edu' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+
+echo 'module purge' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo 'eval "$(conda shell.bash hook)"' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+echo 'conda activate trimgalore_env' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+
+echo 'cd /scratch/alpine/beyo2625/apal_genet' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+
+echo 'trim_galore \
+--fastqc \
+--basename '"${PALPAL}"' \
+--output_dir /scratch/alpine/beyo2625/apal_genet/trim/young2024/'"${PALPAL}"' \
+--cores 10 \
+/scratch/alpine/beyo2625/apal_genet/raw_reads/young2024/'"${PALPAL}"'.fastq' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+sbatch /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg.sh
+done
+```
+*Done 17th April 2025*
+
+```{bash polya 2024 trimming}
+#!/bin/bash
+#SBATCH --time=00:10:00
+#SBATCH --account=ucb423_asc2
+#SBATCH --nodes=1
+#SBATCH --mem=2G
+#SBATCH --job-name=trim2024_poly
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/trim2024_poly.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/trim2024_poly.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+cd /scratch/alpine/beyo2625/apal_genet/raw_reads/young2024
+PALMATA=$(ls *.fastq | sed 's/\.fastq$//')
+
+echo "files going through trimgalore"
+echo $PALMATA
+
+for PALPAL in $PALMATA
+do
+echo "$PALPAL"
+echo '#!/bin/bash' > /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --account=ucb423_asc2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --time=12:00:00' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --nodes=1' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --mem=20G' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --ntasks=5' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --cpus-per-task=2' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --job-name='"$PALPAL"'_trim_poly' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/'"$PALPAL"'_trim_poly.err' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/'"$PALPAL"'_trim_poly.out' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --mail-type=ALL' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo '#SBATCH --mail-user=beyo2625@colorado.edu' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+
+echo 'module purge' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo 'eval "$(conda shell.bash hook)"' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+echo 'conda activate trimgalore_env' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+
+echo 'cd /scratch/alpine/beyo2625/apal_genet/trim/young2024/'"${PALPAL}"'' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+
+echo 'trim_galore \
+--fastqc \
+--output_dir ./ \
+--polyA \
+--basename '"${PALPAL}"'_poly \
+'"${PALPAL}"'_trimmed.fq' >> /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+sbatch /scratch/alpine/beyo2625/apal_genet/trim/young2024/loop_err_out/"$PALPAL"_tg_poly.sh
+done
+```
+
+
+## 4. Acropora Palmata Sanger Genome Prep
+### 4.1 - PASA With Transcriptome Assembly
+
+https://github.com/PASApipeline/PASApipeline/wiki
+
+```{bash intalling pasa}
+mamba create -n pasa_env -c bioconda pasa
+```
+
+Need to make the config file 
+
+```{bash making config and moving}
+cd /scratch/alpine/beyo2625/apal_genet/genome/pasa
+mamba activate pasa_env
+cp $PASAHOME/pasa_conf/pasa.alignAssembly.Template.txt \
+/scratch/alpine/beyo2625/apal_genet/genome/pasa
+
+mv pasa.alignAssembly.Template.txt alignAssembly.config
+```
+
+```{bash running seqclean and PASA pipeline on hq_transcripts}
+#!/bin/bash
+#SBATCH --time=120:00:00
+#SBATCH --qos=blanca-qsmicrobes
+#SBATCH --partition=blanca-qsmicrobes
+#SBATCH --account=blanca-qsmicrobes
+#SBATCH --nodes=1
+#SBATCH --mem=150G
+#SBATCH --job-name=pasa_apal
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/genome/pasa/pasa.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/genome/pasa/pasa.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+export TMP=/scratch/alpine/beyo2625/temp_space
+export TEMP=/scratch/alpine/beyo2625/temp_space
+export TMPDIR=/scratch/alpine/beyo2625/temp_space
+export TEMPDIR=/scratch/alpine/beyo2625/temp_space
+export tmp=/scratch/alpine/beyo2625/temp_space
+export temp_directory=/scratch/alpine/beyo2625/temp_space
+
+module purge 
+eval "$(conda shell.bash hook)"
+conda activate pasa_env
+
+cd /scratch/alpine/beyo2625/apal_genet/genome/pasa
+
+Launch_PASA_pipeline.pl \
+--config alignAssembly.config \
+--ALIGNERS blat,minimap2,gmap \
+--create \
+--replace \
+--run \
+--ALT_SPLICE \
+--genome /scratch/alpine/beyo2625/apal_genet/genome/Apal_genome/apal_chromo_clean.fna \
+--transcripts /scratch/alpine/beyo2625/apal_genet/genome/Apalm_renamed_mrna.fasta \
+--TRANSDECODER \
+--CPU 20
+
+## then do this to get the bit needed for funannotate predict
+$PASAHOME/scripts/pasa_asmbls_to_training_set.dbi \
+> --pasa_transcripts_fasta pasa.db.sqlite.assemblies.fasta \
+> --pasa_transcripts_gff3 pasa.db.sqlite.pasa_assemblies.gff3 
+```
+
+https://github.com/PASApipeline/PASApipeline/wiki/PASA_abinitio_training_sets 
+
+
+### 4.2 - Gene Prediciton
+
+So the Apal genome is chromosome level (yay), but there are no gff, protein models etc etc. We need these for the RNA-seq to make heads and tails of genes and patterns occurring. 
+
+As such I am going to use `Funannotate` to predict and annotate for the chromosome level assembly. I am using a Acer proteome to use as protein evidence for this. 
+
+`Funannotate` - https://funannotate.readthedocs.io/en/latest/index.html
+
+Need to downlaod the busco db for metazoa
+
+```{bash getting busco dbs for corals}
+mamba activate funannotate_env
+funannotate setup --busco_db metazoa
+```
+
+Also need to make the chromomse and mito only file for input. 
+
+```{bash getting chromosomes and mito organelle file}
+awk '/^>/ {keep = ($0 ~ /^>OZ0/)} keep' GCA_964030605.2_jaAcrPala1.2_genomic.fna > apal_chromo.fna
+```
+
+```
+Usage:       funannotate predict <arguments>
+version:     1.8.17
+
+Description: Script takes genome multi-fasta file and a variety of inputs to do a comprehensive whole
+             genome gene prediction.  Uses AUGUSTUS, GeneMark, Snap, GlimmerHMM, BUSCO, EVidence Modeler,
+             tbl2asn, tRNAScan-SE, Exonerate, minimap2.
+Required:
+  -i, --input              Genome multi-FASTA file (softmasked repeats)
+  -o, --out                Output folder name
+  -s, --species            Species name, use quotes for binomial, e.g. "Aspergillus fumigatus"
+
+Optional:
+  -p, --parameters         Ab intio parameters JSON file to use for gene predictors
+  --isolate                Isolate name, e.g. Af293
+  --strain                 Strain name, e.g. FGSCA4
+  --name                   Locus tag name (assigned by NCBI?). Default: FUN_
+  --numbering              Specify where gene numbering starts. Default: 1
+  --maker_gff              MAKER2 GFF file. Parse results directly to EVM.
+  --pasa_gff               PASA generated gene models. filename:weight
+  --other_gff              Annotation pass-through to EVM. filename:weight
+  --rna_bam                RNA-seq mapped to genome to train Augustus/GeneMark-ET
+  --stringtie              StringTie GTF result
+  -w, --weights            Ab-initio predictor and EVM weight. Example: augustus:2 or pasa:10
+  --augustus_species       Augustus species config. Default: uses species name
+  --min_training_models    Minimum number of models to train Augustus. Default: 200
+  --genemark_mode          GeneMark mode. Default: ES [ES,ET]
+  --genemark_mod           GeneMark ini mod file
+  --busco_seed_species     Augustus pre-trained species to start BUSCO. Default: anidulans
+  --optimize_augustus      Run 'optimze_augustus.pl' to refine training (long runtime)
+  --busco_db               BUSCO models. Default: dikarya. `funannotate outgroups --show_buscos`
+  --organism               Fungal-specific options. Default: fungus. [fungus,other]
+  --ploidy                 Ploidy of assembly. Default: 1
+  -t, --tbl2asn            Assembly parameters for tbl2asn. Default: "-l paired-ends"
+  -d, --database           Path to funannotate database. Default: $FUNANNOTATE_DB
+
+  --protein_evidence       Proteins to map to genome (prot1.fa prot2.fa uniprot.fa). Default: uniprot.fa
+  --protein_alignments     Pre-computed protein alignments in GFF3 format
+  --p2g_pident             Exonerate percent identity. Default: 80
+  --p2g_diamond_db         Premade diamond genome database for protein2genome mapping
+  --p2g_prefilter          Pre-filter hits software selection. Default: diamond [tblastn]
+  --transcript_evidence    mRNA/ESTs to align to genome (trans1.fa ests.fa trinity.fa). Default: none
+  --transcript_alignments  Pre-computed transcript alignments in GFF3 format
+  --augustus_gff           Pre-computed AUGUSTUS GFF3 results (must use --stopCodonExcludedFromCDS=False)
+  --genemark_gtf           Pre-computed GeneMark GTF results
+  --trnascan               Pre-computed tRNAscanSE results
+
+  --min_intronlen          Minimum intron length. Default: 10
+  --max_intronlen          Maximum intron length. Default: 3000
+  --soft_mask              Softmasked length threshold for GeneMark. Default: 2000
+  --min_protlen            Minimum protein length. Default: 50
+  --repeats2evm            Use repeats in EVM consensus model building
+  --keep_evm               Keep existing EVM results (for rerunning pipeline)
+  --evm-partition-interval Min length between genes to make a partition: Default: 1500
+  --no-evm-partitions      Do not split contigs into partitions
+  --repeat_filter          Repetitive gene model filtering. Default: overlap blast [overlap,blast,none]
+  --keep_no_stops          Keep gene models without valid stops
+  --SeqCenter              Sequencing facilty for NCBI tbl file. Default: CFMR
+  --SeqAccession           Sequence accession number for NCBI tbl file. Default: 12345
+  --force                  Annotated unmasked genome
+  --cpus                   Number of CPUs to use. Default: 2
+  --no-progress            Do not print progress to stdout for long sub jobs
+  --tmpdir                 Volume/location to write temporary files. Default: /tmp
+  --header_length          Maximum length of FASTA headers. Default: 16
+
+ENV Vars:  If not specified at runtime, will be loaded from your $PATH
+  --EVM_HOME
+  --AUGUSTUS_CONFIG_PATH
+  --GENEMARK_PATH
+  --BAMTOOLS_PATH
+```
+
+Running predict with the following
+- PASA GFF
+- Acropora cervicornis transcriptome
+- Acropora palmata transcriptome
+- Acer proteome
+- Uniprot database. 
+
+```{bash installing gffread}
+mamba create -n gffread_env -c bioconda gffread
+```
+
+```{bash making transcriptome}
+mamba activate gffread_env
+gffread genomic.gff \
+-g GCA_032359415.1_NEU_Acer_K2_genomic.fna \
+-w acer_transcriptome.fa
+```
+
+```{bash predict with pasa}
+#!/bin/bash
+#SBATCH --time=168:00:00
+#SBATCH --qos=blanca-qsmicrobes
+#SBATCH --partition=blanca-qsmicrobes
+#SBATCH --account=blanca-qsmicrobes
+#SBATCH --nodes=1
+#SBATCH --mem=150G
+#SBATCH --job-name=funpred_pasareal
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/funpred_pasareal.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/funpred_pasareal.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+export TMP=/scratch/alpine/beyo2625/temp_space
+export TEMP=/scratch/alpine/beyo2625/temp_space
+export TMPDIR=/scratch/alpine/beyo2625/temp_space
+export TEMPDIR=/scratch/alpine/beyo2625/temp_space
+export tmp=/scratch/alpine/beyo2625/temp_space
+export temp_directory=/scratch/alpine/beyo2625/temp_space
+
+module purge 
+eval "$(conda shell.bash hook)"
+conda activate funannotate_env
+
+cd /scratch/alpine/beyo2625/apal_genet/genome/funannotate
+
+funannotate \
+sort \
+--input apal_chromo.fna \
+--out apal_chromo_clean.fna \
+--base chromosome \
+--minlen 300
+
+funannotate \
+predict \
+--input /scratch/alpine/beyo2625/apal_genet/genome/Apal_genome/apal_chromo_clean.fna \
+--out apal_funannotate_pasa_real \
+--species "Acropora palmata" \
+--isolate jaAcrPala1.2 \
+--name jaAcrPala \
+--optimize_augustus \
+--organism other \
+--busco_db metazoa \
+--pasa_gff /scratch/alpine/beyo2625/apal_genet/genome/pasa/pasa.db.sqlite.assemblies.fasta.transdecoder.genome.gff3 \
+--protein_evidence /scratch/alpine/beyo2625/apal_genet/genome/Acer_genome/GCA_032359415.1/protein.faa $FUNANNOTATE_DB/uniprot_sprot.fasta \
+--transcript_evidence /scratch/alpine/beyo2625/apal_genet/genome/Acer_genome/GCA_032359415.1/acer_transcriptome.fa /scratch/alpine/beyo2625/apal_genet/genome/Apalm_assembly_v3.1_200911.mrna.fasta \
+--ploidy 2 \
+--keep_evm \
+--busco_seed_species Hydra_vulgaris \
+--tmpdir /scratch/alpine/beyo2625/temp_space
+```
+
+
+### 4.3 - Updating Gene Models
+
+Using `funannotate::update` with avaliable RNA-seq reads from NCBI. 
+
+```{bash getting Apal RNA-seq reads}
+mamba activate sratools_env
+esearch -db bioproject -query PRJNA67695 | \
+elink -target sra | \
+efetch -format runinfo > apal_rna.csv
+
+cut -d ',' -f 1 apal_rna.csv | grep "^SRR" > apal_rna.txt
+
+cat apal_rna.txt | xargs -n 1 prefetch
+for sra in $(cat apal_rna.txt); do
+    fasterq-dump $sra --split-files
+done
+```
+
+```
+Usage:       funannotate update <arguments>
+version:     1.8.17
+
+Description: Script will run PASA mediated update of gene models. It can directly update
+             the annotation from an NCBI downloaded GenBank file using RNA-seq data or can be
+             used after funannotate predict to refine UTRs and gene model predictions. Kallisto
+             is used to evidence filter most likely PASA gene models. Dependencies are
+             hisat2, Trinity, samtools, fasta, minimap2, PASA, kallisto, bedtools.
+
+Required:
+  -i, --input              Funannotate folder or Genome in GenBank format (.gbk,.gbff).
+    or
+  -f, --fasta              Genome in FASTA format
+  -g, --gff                Annotation in GFF3 format
+  --species                Species name, use quotes for binomial, e.g. "Aspergillus fumigatus"
+
+Optional:
+  -o, --out                Output folder name
+  -l, --left               Left/Forward FASTQ Illumina reads (R1)
+  -r, --right              Right/Reverse FASTQ Illumina reads (R2)
+  -s, --single             Single ended FASTQ reads
+  --stranded               If RNA-seq library stranded. [RF,FR,F,R,no]
+  --left_norm              Normalized left FASTQ reads (R1)
+  --right_norm             Normalized right FASTQ reads (R2)
+  --single_norm            Normalized single-ended FASTQ reads
+  --pacbio_isoseq          PacBio long-reads
+  --nanopore_cdna          Nanopore cDNA long-reads
+  --nanopore_mrna          Nanopore mRNA direct long-reads
+  --trinity                Pre-computed Trinity transcripts (FASTA)
+  --jaccard_clip           Turn on jaccard clip for dense genomes [Recommended for fungi]
+  --no_normalize_reads     Skip read Normalization
+  --no_trimmomatic         Skip Quality Trimming of reads
+  --memory                 RAM to use for Jellyfish. Default: 50G
+  -c, --coverage           Depth to normalize reads. Default: 50
+  -m, --min_coverage       Min depth for normalizing reads. Default: 5
+  --pasa_config            PASA assembly config file, i.e. from previous PASA run
+  --pasa_db                Database to use. Default: sqlite [mysql,sqlite]
+  --pasa_alignment_overlap PASA --stringent_alignment_overlap. Default: 30.0
+  --aligners               Aligners to use with PASA: Default: minimap2 blat [gmap]
+  --pasa_min_pct_aligned   PASA --MIN_PERCENT_ALIGNED. Default: 90
+  --pasa_min_avg_per_id    PASA --MIN_AVG_PER_ID. Default: 95
+  --pasa_num_bp_splice     PASA --NUM_BP_PERFECT_SPLICE_BOUNDARY. Default: 3
+  --max_intronlen          Maximum intron length. Default: 3000
+  --min_protlen            Minimum protein length. Default: 50
+  --alt_transcripts        Expression threshold (percent) to keep alt transcripts. Default: 0.1 [0-1]
+  --p2g                    NCBI p2g file (if updating NCBI annotation)
+  -t, --tbl2asn            Assembly parameters for tbl2asn. Example: "-l paired-ends"
+  --name                   Locus tag name (assigned by NCBI?). Default: use existing
+  --sbt                    NCBI Submission file
+  --species                Species name, use quotes for binomial, e.g. "Aspergillus fumigatus"
+  --strain                 Strain name
+  --isolate                Isolate name
+  --SeqCenter              Sequencing facilty for NCBI tbl file. Default: CFMR
+  --SeqAccession           Sequence accession number for NCBI tbl file. Default: 12345
+  --cpus                   Number of CPUs to use. Default: 2
+  --no-progress            Do not print progress to stdout for long sub jobs
+
+ENV Vars:  If not passed, will try to load from your $PATH.
+  --PASAHOME
+  --TRINITYHOME
+```
+
+```{bash running funannotate update to get 3 and 5 prime UTRs}
+#!/bin/bash
+#SBATCH --time=168:00:00
+#SBATCH --qos=blanca-qsmicrobes
+#SBATCH --partition=blanca-qsmicrobes
+#SBATCH --account=blanca-qsmicrobes
+#SBATCH --nodes=1
+#SBATCH --mem=150G
+#SBATCH --ntasks=15
+#SBATCH --cpus-per-task=2
+#SBATCH --job-name=funpred_pasareal
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/funpred_pasa_update.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/funpred_pasa_update.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+export TMP=/scratch/alpine/beyo2625/temp_space
+export TEMP=/scratch/alpine/beyo2625/temp_space
+export TMPDIR=/scratch/alpine/beyo2625/temp_space
+export TEMPDIR=/scratch/alpine/beyo2625/temp_space
+export tmp=/scratch/alpine/beyo2625/temp_space
+export temp_directory=/scratch/alpine/beyo2625/temp_space
+
+module purge 
+eval "$(conda shell.bash hook)"
+conda activate funannotate_env
+
+cd /scratch/alpine/beyo2625/apal_genet/genome/funannotate
+
+funannotate \
+update \
+-i apal_funannotate_pasa_real \
+--cpus 30 \
+--single /scratch/alpine/beyo2625/apal_genet/genome/apal_rnaseq/SRR241729_2.fastq \
+--memory 100G \
+--species "Acropora palmata" \
+--isolate jaAcrPala1.2 \
+--name jaAcrPala
+```
+
+
+## 5. Alignment
+### 5.1 - Indexing the Transcriptome
+
+So we have the following studies
+`Young 2020` - traditional RNA-seq. Original paper used `STAR` alignment and `Salmon` quant
+  https://github.com/benyoung93/innate_immune_response_acropora_palmata
+`Young 2023` - 3 prime RNA-seq. Original paper used `Salmon` for alignment and quant
+  https://github.com/benyoung93/resposne_of_acropora_palmata_to_disease_and_heat/tree/main/transcriptomic/unix_scripts
+`Young 2024` - 3 prime RNA-seq. Used Salmon for alignment and quant. 
+  https://github.com/benyoung93/acropora_palmata_field_transcriptomics/blob/main/rscripts/Apal_outplant_rnaseq_full_pipeline.Rmd
+  
+```{bash making salmon conda environment}
+mamba create -n salmon_env -c bioconda salmon
+mamba activate salmon_env
+mamba install -c bioconda mashmap -c bioconda bedtools
+```
+
+Also copy and pasted the `generateDecoyTranscriptome.sh` to the env bin folder and made executable. 
+- https://github.com/COMBINE-lab/SalmonTools/blob/master/scripts/generateDecoyTranscriptome.sh
+
+```{bash making the transcriptome}
+mamba activate salmon_env
+cd /scratch/alpine/beyo2625/apal_genet/genome
+salmon \
+index \
+-t funannotate/apal_funannotate_pasa_real/update_results/Acropora_palmata_jaAcrPala1.2.mrna-transcripts.fa \
+-i salmon_sang \
+-k 19
+```
+
+```{bash making the trasncript to gene file}
+cd /scratch/alpine/beyo2625/apal_genet/genome/
+cp funannotate/apal_funannotate_pasa_real/update_results/Acropora_palmata_jaAcrPala1.2.mrna-transcripts.fa ./
+grep "^>" Acropora_palmata_jaAcrPala1.2.mrna-transcripts.fa | sed 's/^>//' | awk '{print $1 "\t" $2}' > transcript_to_gene.txt
+```
+
+
+### 5.2 - Aligning 2020
+
+```{bash aligning 2023 samples}
+#!/bin/bash
+#SBATCH --time=00:10:00
+#SBATCH --account=ucb423_asc2
+#SBATCH --nodes=1
+#SBATCH --mem=2G
+#SBATCH --job-name=salmon2020
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/align2020.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/align2020.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+cd /scratch/alpine/beyo2625/apal_genet/trim/young2020
+PALMATA=$(ls -d SRR*/ | sed 's#/##')
+
+echo "files going through salmon 2024"
+echo $PALMATA
+
+for PALPAL in $PALMATA
+do
+echo "$PALPAL"
+echo '#!/bin/bash' > /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --account=ucb423_asc2' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --time=12:00:00' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --nodes=1' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --mem=20G' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --ntasks=5' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --cpus-per-task=2' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --job-name='"$PALPAL"'_salmon' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/'"$PALPAL"'_salmon.err' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/'"$PALPAL"'_salmon.out' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --mail-type=ALL' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --mail-user=beyo2625@colorado.edu' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+
+echo 'module purge' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo 'eval "$(conda shell.bash hook)"' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+echo 'conda activate salmon_env' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+
+echo 'cd /scratch/alpine/beyo2625/apal_genet' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+
+echo 'salmon \
+quant \
+-i genome/salmon_sang \
+-l SR \
+-r trim/young2020/'"${PALPAL}"'/'"${PALPAL}"'_trimmed.fq \
+--softclip \
+--noLengthCorrection \
+--threads 10 \
+--geneMap genome/transcript_to_gene.txt \
+--minScoreFraction 0.1 \
+--output align/young2020/'"${PALPAL}"'_loca' >> /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+
+sbatch /scratch/alpine/beyo2625/apal_genet/align/young2020/loop_err_out/"$PALPAL"_salmon.sh
+done
+```
+
+### 5.3 - Aligning 2023
+
+```{bash aligning 2023 samples}
+#!/bin/bash
+#SBATCH --time=00:10:00
+#SBATCH --account=ucb423_asc2
+#SBATCH --nodes=1
+#SBATCH --mem=2G
+#SBATCH --job-name=salmon2023
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/align2023.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/align2023.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+cd /scratch/alpine/beyo2625/apal_genet/trim/young2023
+PALMATA=$(ls -d SRR*/ | sed 's#/##')
+
+echo "files going through trimgalore"
+echo $PALMATA
+
+for PALPAL in $PALMATA
+do
+echo "$PALPAL"
+echo '#!/bin/bash' > /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --account=ucb423_asc2' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --time=12:00:00' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --nodes=1' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --mem=20G' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --ntasks=5' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --cpus-per-task=2' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --job-name='"$PALPAL"'_salmon' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/'"$PALPAL"'_salmon.err' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/'"$PALPAL"'_salmon.out' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --mail-type=ALL' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --mail-user=beyo2625@colorado.edu' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+
+echo 'module purge' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo 'eval "$(conda shell.bash hook)"' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+echo 'conda activate salmon_env' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+
+echo 'cd /scratch/alpine/beyo2625/apal_genet' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+
+echo 'salmon \
+quant \
+-i genome/salmon_sang \
+-l SF \
+-r trim/young2023/'"${PALPAL}"'/'"${PALPAL}"'_poly_trimmed_trimmed.fq \
+--softclip \
+--noLengthCorrection \
+--threads 10 \
+--geneMap genome/transcript_to_gene.txt \
+--minScoreFraction 0.1 \
+--output align/young2023/'"${PALPAL}"'_loca' >> /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+
+sbatch /scratch/alpine/beyo2625/apal_genet/align/young2023/loop_err_out/"$PALPAL"_salmon.sh
+done
+```
+
+
+### 5.3 - Aligning 2024
+
+```{bash aligning 2023 samples}
+#!/bin/bash
+#SBATCH --time=00:10:00
+#SBATCH --account=ucb423_asc2
+#SBATCH --nodes=1
+#SBATCH --mem=2G
+#SBATCH --job-name=salmon2024
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/align2024.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/align2024.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+cd /scratch/alpine/beyo2625/apal_genet/trim/young2024
+PALMATA=$(ls -d SRR*/ | sed 's#/##')
+
+echo "files going through salmon 2024"
+echo $PALMATA
+
+for PALPAL in $PALMATA
+do
+echo "$PALPAL"
+echo '#!/bin/bash' > /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --account=ucb423_asc2' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --time=12:00:00' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --nodes=1' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --mem=20G' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --ntasks=5' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --cpus-per-task=2' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --job-name='"$PALPAL"'_salmon' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/'"$PALPAL"'_salmon.err' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/'"$PALPAL"'_salmon.out' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --mail-type=ALL' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo '#SBATCH --mail-user=beyo2625@colorado.edu' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+
+echo 'module purge' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo 'eval "$(conda shell.bash hook)"' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+echo 'conda activate salmon_env' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+
+echo 'cd /scratch/alpine/beyo2625/apal_genet' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+
+echo 'salmon \
+quant \
+-i genome/salmon_sang \
+-l SF \
+-r trim/young2024/'"${PALPAL}"'/'"${PALPAL}"'_poly_trimmed_trimmed.fq \
+--softclip \
+--noLengthCorrection \
+--threads 10 \
+--geneMap genome/transcript_to_gene.txt \
+--minScoreFraction 0.1 \
+--output align/young2024/'"${PALPAL}"'_loca' >> /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+
+sbatch /scratch/alpine/beyo2625/apal_genet/align/young2024/loop_err_out/"$PALPAL"_salmon.sh
+done
+```
+
+All done and now to RNA-seq analysis.
+
+
+### 5.4 - Making a summary file of alignmnet rates
+
+Wrote a custom biperl script to do this. 
+
+```
+#!/usr/bin/perl
+use strict;
+use warnings;
+use File::Find;
+
+# Check for proper arguments
+die "Usage: $0 <base_directory> <output_file>\n" unless @ARGV == 2;
+
+my ($base_dir, $output_file) = @ARGV;
+
+open my $out, '>', $output_file or die "Cannot open output file '$output_file': $!\n";
+print $out "Sample\tMapping_Percentage\n";
+
+find(\&process_log, $base_dir);
+
+sub process_log {
+    return unless /salmon_quant\.log$/;
+
+    my $log_file = $File::Find::name;
+    my $sample;
+
+    # Extract sample name from path (e.g., SRR24633217_loca)
+    if ($log_file =~ m|/([^/]+?)/logs/salmon_quant\.log$|) {
+        $sample = $1;
+    } else {
+        warn "Could not parse sample name from $log_file\n";
+        return;
+    }
+
+    open my $fh, '<', $log_file or do {
+        warn "Could not open $log_file: $!";
+        return;
+    };
+
+    my $mapping;
+    while (<$fh>) {
+        if (/Mapping rate\s*=\s*([\d.]+)%/) {
+            $mapping = $1;
+            last;
+        }
+    }
+    close $fh;
+
+    if (defined $mapping) {
+        print $out "$sample\t$mapping%\n";
+    } else {
+        warn "No mapping rate found in $log_file\n";
+    }
+}
+
+close $out;
+```
+
+```{bash }
+mamba activate bioperl_env
+perl salmon_mapl.pl \
+/scratch/alpine/beyo2625/apal_genet/align \
+./mapping_summary.tsv
+```
+
+
+## 6. Annotating Sanger Genome
+
+So the naming convention from Nicks annotation file to the gff3 and transcriptome is super duper weird. Therfore and thus, I will be using funnannotate::annotate using the correct flags. 
+
+So it will be 
+- eggnog (in Funannotate annotate)
+- interproscan (external)
+- then funannotate::annotate
+
+
+### 6.1 - Interproscan
+
+```{bash running interproscan in singularity}
+#!/bin/bash
+#SBATCH --time=168:00:00
+#SBATCH --qos=blanca-qsmicrobes
+#SBATCH --partition=blanca-qsmicrobes
+#SBATCH --account=blanca-qsmicrobes
+#SBATCH --nodes=1
+#SBATCH --mem=150G
+#SBATCH --job-name=interpro
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/loop_err_out/interpro.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/loop_err_out/interpro.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+module purge
+module load singularity/3.7.4
+
+cd /scratch/alpine/beyo2625/apal_genet/genome/funannotate
+mkdir interproscan
+cd interproscan
+mkdir temp input output
+cp /projects/beyo2625/singularity/interproscan_5.73-104.0.sif ./
+cp /scratch/alpine/beyo2625/apal_genet/genome/funannotate/apal_funannotate_pasa_real/update_results/Acropora_palmata_jaAcrPala1.2.proteins.fa input/
+
+## currently here /scratch/alpine/beyo2625/apal_genet/genome/funannotate/interproscan
+
+singularity exec \
+    -B /projects/beyo2625/dbs/interproscan/interproscan-5.73-104.0/data:/opt/interproscan/data \
+    -B /scratch/alpine/beyo2625/apal_genet/genome/funannotate/interproscan/input:/input \
+    -B /scratch/alpine/beyo2625/apal_genet/genome/funannotate/interproscan/temp:/temp \
+    -B /scratch/alpine/beyo2625/apal_genet/genome/funannotate/interproscan/output:/output \
+    interproscan_5.73-104.0.sif \
+    /opt/interproscan/interproscan.sh \
+    --input /input/Acropora_palmata_jaAcrPala1.2.proteins.fa \
+    --disable-precalc \
+    --goterms \
+    --formats TSV,XML,GFF3 \
+    --output-dir /output \
+    --tempdir /temp \
+    --cpu 10
+```
+*Written not run 5th May 2025*
+
+
+### 6.2 - Eggnog 
+
+```{bash running eggnog in singularity}
+#!/bin/bash
+#SBATCH --time=168:00:00
+#SBATCH --qos=blanca-qsmicrobes
+#SBATCH --partition=blanca-qsmicrobes
+#SBATCH --account=blanca-qsmicrobes
+#SBATCH --nodes=1
+#SBATCH --mem=150G
+#SBATCH --ntasks=15
+#SBATCH --cpus-per-task=2
+#SBATCH --job-name=eggnog
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/loop_err_out/eggnog.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/loop_err_out/eggnog.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+export TMP=/scratch/alpine/beyo2625/temp_space
+export TEMP=/scratch/alpine/beyo2625/temp_space
+export TMPDIR=/scratch/alpine/beyo2625/temp_space
+export TEMPDIR=/scratch/alpine/beyo2625/temp_space
+export tmp=/scratch/alpine/beyo2625/temp_space
+export temp_directory=/scratch/alpine/beyo2625/temp_space
+
+module purge 
+eval "$(conda shell.bash hook)"
+conda activate eggnogmapper_env
+
+cd /scratch/alpine/beyo2625/apal_genet/genome/funannotate
+mkdir eggnog
+
+emapper.py \
+-i apal_funannotate_pasa_real/update_results/Acropora_palmata_jaAcrPala1.2.proteins.fa \
+--itype proteins \
+--output eggnog \
+--temp_dir /scratch/alpine/beyo2625/temp_space \
+--excel \
+--cpu 30
+```
+
+
+
+### 6.3 - Funannotate Annotate
+
+```
+Usage:       funannotate annotate <arguments>
+version:     1.8.16
+
+Description: Script functionally annotates the results from funannotate predict.  It pulls
+             annotation from PFAM, InterPro, EggNog, UniProtKB, MEROPS, CAZyme, and GO ontology.
+
+Required:
+  -i, --input        Folder from funannotate predict
+        or
+  --genbank          Genome in GenBank format
+  -o, --out          Output folder for results
+        or
+  --gff              Genome GFF3 annotation file
+  --fasta            Genome in multi-fasta format
+  -s, --species      Species name, use quotes for binomial, e.g. "Aspergillus fumigatus"
+  -o, --out          Output folder for results
+
+Optional:
+  --sbt              NCBI submission template file. (Recommended)
+  -a, --annotations  Custom annotations (3 column tsv file)
+  -m, --mito-pass-thru Mitochondrial genome/contigs. append with :mcode
+  --eggnog           Eggnog-mapper annotations file (if NOT installed)
+  --antismash        antiSMASH secondary metabolism results (GBK file from output)
+  --iprscan          InterProScan5 XML file
+  --phobius          Phobius pre-computed results (if phobius NOT installed)
+  --signalp            SignalP pre-computed results (-org euk -format short)
+  --isolate          Isolate name
+  --strain           Strain name
+  --rename           Rename GFF gene models with locus_tag from NCBI.
+  --fix              Gene/Product names fixed (TSV: GeneID      Name    Product)
+  --remove           Gene/Product names to remove (TSV: Gene    Product)
+  --busco_db         BUSCO models. Default: dikarya
+  -t, --tbl2asn      Additional parameters for tbl2asn. Default: "-l paired-ends"
+  -d, --database     Path to funannotate database. Default: $FUNANNOTATE_DB
+  --force            Force over-write of output folder
+  --cpus             Number of CPUs to use. Default: 2
+  --tmpdir             Volume/location to write temporary files. Default: /tmp
+  --p2g                protein2genome pre-computed results
+  --header_length      Maximum length of FASTA headers. Default: 16
+  --no-progress        Do not print progress to stdout for long sub jobs
+```
+
+```{bash funannotate annotate command}
+#!/bin/bash
+#SBATCH --time=168:00:00
+#SBATCH --qos=blanca-qsmicrobes
+#SBATCH --partition=blanca-qsmicrobes
+#SBATCH --account=blanca-qsmicrobes
+#SBATCH --nodes=1
+#SBATCH --mem=150G
+#SBATCH --ntasks=15
+#SBATCH --cpus-per-task=2
+#SBATCH --job-name=funpred_annotate
+#SBATCH --error=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/loop_err_out/funpred_annotate.err
+#SBATCH --output=/scratch/alpine/beyo2625/apal_genet/genome/funannotate/loop_err_out/funpred_annotate.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=beyo2625@colorado.edu
+
+export TMP=/scratch/alpine/beyo2625/temp_space
+export TEMP=/scratch/alpine/beyo2625/temp_space
+export TMPDIR=/scratch/alpine/beyo2625/temp_space
+export TEMPDIR=/scratch/alpine/beyo2625/temp_space
+export tmp=/scratch/alpine/beyo2625/temp_space
+export temp_directory=/scratch/alpine/beyo2625/temp_space
+
+module purge 
+eval "$(conda shell.bash hook)"
+conda activate funannotate_env
+
+cd /scratch/alpine/beyo2625/apal_genet/genome/funannotate
+
+funannotate \
+annotate \
+--input apal_funannotate_pasa_real \
+--eggnog /scratch/alpine/beyo2625/apal_genet/genome/funannotate/apal_funannotate_pasa_real/annotate_misc/eggnog.emapper.annotations \
+--iprscan /scratch/alpine/beyo2625/apal_genet/genome/funannotate/interproscan/output/Acropora_palmata_jaAcrPala1.2.proteins.fa.xml \
+--isolate jaAcrPala1.2 \
+--tmpdir /scratch/alpine/beyo2625/temp_space \
+--busco_db metazoa \
+--cpus 30 \
+--force
+```
+
+
+### 6.4 - Making Annotation File
+
+Okay so the annotations file being given in funannotate is not parsing correctly so I need to do it myself, sigh. 
+
+We have the following analyses
+- Running HMMer search of PFAM version 37.2 - *DONE*
+- Running Diamond blastp search of UniProt DB version 2025_01
+- Running Eggnog-mapper - *DONE*
+- Running Diamond blastp search of MEROPS version 12.0 - *DONE*
+- Annotating CAZYmes using HMMer search of dbCAN version 13.0 - *DONE*
+- Annotating proteins with BUSCO metazoa models - *DONE*
+- Skipping phobius predictions, try funannotate remote -m phobius - *NA*
+- Skipping secretome: neither SignalP nor Phobius searches were run - *NA*
+- Parsing InterProScan5 XML file
+
+Okay making the base annotatiaon file 
+
+```{bash making the gene to transcript info for annot file}
+cd /scratch/alpine/beyo2625/apal_genet/genome/funannotate/apal_funannotate_pasa_real
+
+awk -F'\t' '$3 == "mRNA" || $3 == "tRNA" {
+    split($9, a, ";");
+    transcript_id = ""; gene_id = "";
+    for (i in a) {
+        if (a[i] ~ /^ID=/) {
+            split(a[i], b, "=");
+            transcript_id = b[2];
+        }
+        if (a[i] ~ /^Parent=/) {
+            split(a[i], b, "=");
+            gene_id = b[2];
+        }
+    }
+
+    # Fallback if no Parent, derive GeneID from TranscriptID
+    if (gene_id == "") {
+        gene_id = transcript_id;
+        gsub("-T[0-9]+", "", gene_id);
+    }
+
+    print gene_id "\t" transcript_id "\t" $3 "\t" $1 "\t" $4 "\t" $5 "\t" $7;
+}' update_results/Acropora_palmata_jaAcrPala1.2.gff3 > base_annotation.tsv
+```
+
+```{r reading basename into r, include = F}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/reference_genome/base_annotation.tsv", 
+         sep = "\t", 
+         header = T) -> annot
+```
+
+Okay so that is our basename annot file that we can start building with all the annotation results. 
+
+```{r}
+library(tidyverse)
+library(readr)
+```
+
+```{r adding in products and names, include = F}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/reference_genome/annotate_misc/uniprot_eggnog_raw_names.csv", 
+         header = F) %>% 
+  rename(TranscriptID = V1, 
+         name = V2, 
+         product = V3, 
+         database = V4) -> names
+
+names_wide <- names %>%
+  pivot_wider(
+    id_cols = TranscriptID,
+    names_from = database,
+    values_from = c(name, product),
+    names_glue = "{.value}_{database}",
+    values_fn = list(name = function(x) x[1], product = function(x) x[1])
+  )
+# View(names_wide)
+# View(names)
+
+names_wide_done <- names_wide %>%
+  mutate(
+    name    = coalesce(`name_UniProtKB`, `name_EggNog-Mapper`),
+    product = coalesce(`product_UniProtKB`, `product_EggNog-Mapper`)
+  ) %>% 
+  dplyr::select(1, name, product, 2, 4, 3, 5)
+# View(names_wide_done)
+```
+
+```{r formatting pfam results}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/reference_genome/annotate_misc/annotations.pfam.csv", 
+         header = F) %>% 
+  rename(TranscriptID = V1, 
+         Database = V2, 
+         Pfam_id = V3) %>%
+  mutate(Pfam_id = str_remove(Pfam_id, "^PFAM:")) %>%
+  group_by(TranscriptID) %>%
+  summarise(Pfam_ID = paste(unique(Pfam_id), collapse = ";")) %>%
+  ungroup() -> pfam_done
+# View(pfam_done)
+```
+
+```{r formatting busco results}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/reference_genome/annotate_misc/annotations.busco.csv",
+         header = F) %>%
+  rename(TranscriptID = V1,
+         Database = V2,
+         BUSCO_id = V3) %>%
+  mutate(BUSCO_id = str_remove(BUSCO_id, "^BUSCO:")) %>%
+  group_by(TranscriptID) %>%
+  summarise(BUSCO_id = paste(unique(BUSCO_id), collapse = ";")) %>%
+  ungroup() -> busco_done
+# View(busco_done)
+```
+
+```{r formatting cazy results}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/reference_genome/annotate_misc/annotations.dbCAN.csv", 
+         header = F) %>%
+  rename(TranscriptID = V1,
+         Database = V2,
+         CAZy_id = V3) %>%
+  mutate(CAZy_id = str_remove(CAZy_id, "^CAZy:")) %>%
+  group_by(TranscriptID) %>%
+  summarise(CAZy_id = paste(unique(CAZy_id), collapse = ";")) %>% 
+  ungroup() -> cazy_done
+# View(cazy_done)
+```
+
+```{r}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/reference_genome/annotate_misc/annotations.merops.csv", 
+         header = F) %>%
+  rename(TranscriptID = V1,
+         Database = V2,
+         merops_id = V3) %>%
+  mutate(merops_id = str_remove(merops_id, "^MEROPS:")) %>%
+  group_by(TranscriptID) %>%
+  summarise(merops_id = paste(unique(merops_id), collapse = ";")) %>% 
+  ungroup() -> merops_done
+# View(merops_done)
+```
+
+```{r getting eggnog results}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/reference_genome/annotate_misc/eggnog.emapper.annotations_edit.csv", 
+         header = T) %>% 
+  rename(TranscriptID = query) -> eggnog_done
+```
+
+```{r reading interproscan results}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/reference_genome/interproscan/output/Acropora_palmata_jaAcrPala1.2.proteins.fa_1.csv",
+         header = T) %>%
+  mutate(
+    interproscan_accesion = na_if(interproscan_accesion, "-"),
+    go_terms = na_if(go_terms, "-")
+  ) %>%
+  group_by(TranscriptID) %>%
+  summarise(
+    interpro_ids = paste(na.omit(unique(
+      interproscan_accesion
+    )), collapse = "; "),
+    interpro_go_terms = paste(na.omit(unique(unlist(
+      str_split(go_terms, "\\|")
+    ))), collapse = "; ")
+  ) %>% mutate(
+    interpro_ids = if_else(interpro_ids == "", NA_character_, interpro_ids),
+    interpro_go_terms = if_else(interpro_go_terms == "", NA_character_, interpro_go_terms)
+  ) %>%
+  filter(!(is.na(interpro_ids) & is.na(interpro_go_terms))) %>%
+  ungroup() -> interopro_merge
+```
+
+```{r merging all the annot stuff together, include = F}
+annot %>% 
+  left_join(names_wide_done, 
+            by = "TranscriptID") %>% 
+  mutate(product = replace_na(product, "hypothetical_protein"), 
+         product = if_else(grepl("trna", Feature, ignore.case = TRUE), "tRNA", product)) %>%
+  left_join(eggnog_done, 
+            by = "TranscriptID") %>% 
+  left_join(pfam_done, 
+            by = "TranscriptID") %>% 
+  left_join(busco_done, 
+            by = "TranscriptID") %>% 
+  left_join(cazy_done, 
+            by = "TranscriptID") %>% 
+  left_join(merops_done, 
+            by = "TranscriptID") %>%
+  left_join(interopro_merge, 
+            by = "TranscriptID") -> annot_complete
+```
+
+```{r saving rdata object for annot, include = F}
+save(annot_complete, 
+     file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/annot_complete.RData")
+```
+

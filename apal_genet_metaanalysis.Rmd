@@ -1,0 +1,3668 @@
+---
+title: "apal_genet_analysis"
+output: html_document
+date: "2025-05-01"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+Young et al 2020 - PRJNA529682
+(<https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0228514>)
+Young et al 2023 - PRJNA895002
+(<https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0286293#sec030>)
+Young et al 2024 - PRJNA1081901
+(<https://www.nature.com/articles/s41598-024-80479-y#data-availability>)
+
+And these have the following types of reads. `Young 2020` - traditional
+RNA-seq. Original paper used `STAR` alignment and `Salmon` quant
+<https://github.com/benyoung93/innate_immune_response_acropora_palmata>
+`Young 2023` - 3 prime RNA-seq. Original paper used `Salmon` for
+alignment and quant
+<https://github.com/benyoung93/resposne_of_acropora_palmata_to_disease_and_heat/tree/main/transcriptomic/unix_scripts>
+`Young 2024` - 3 prime RNA-seq. Used Salmon for alignment and quant.
+<https://github.com/benyoung93/acropora_palmata_field_transcriptomics/blob/main/rscripts/Apal_outplant_rnaseq_full_pipeline.Rmd>
+
+<https://www.ncbi.nlm.nih.gov/Traces/study/> -\> place to get metadata
+that is better than the normalNCBI website. \# Metadata and Count Prep
+
+```{r library loading, include = F, echo = F}
+library(tidyverse)
+library(tximport)
+```
+
+
+# Pre-analysis Organisation
+
+## 1. Metadata
+### 1.1 - Reading in all metdata for studies
+
+So I downloaded the biosample data from NCBI, and then used my
+`extract.py` script i wrote to make this into CSV files.
+
+```{bash extracting biosample data to csv file}
+cd /scratch/alpine/beyo2625/apal_genet/metadata
+mamba activate bioperl_env
+python3 extract.py -i young2020.txt -o young2020.csv
+python3 extract.py -i young2023.txt -o young2023.csv
+python3 extract.py -i young2024.txt -o young2024.csv
+```
+
+Okay for this i need to  
+1. incorporate with the all_treatment.csv file  
+2. Use mb_2016_2017_metadata.csv to get the actual genet nursery names  
+
+```{r reading in metadata for 2020}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/young2020.csv") %>% 
+  dplyr::select(-BioSample) %>%
+  rename(BioSample = Accession) %>%
+  dplyr::select(BioSample, SRA, Sample.name) -> young2020_md
+
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/all_treatment_file_2020.csv") %>% 
+  mutate(Sample.name = str_replace_all(Sample_numbers, "_salmon", "")) -> md2020
+
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/SraRunTable2020.csv") %>% 
+  dplyr::select(Run, BioProject, BioSample) -> runtab2020
+
+young2020_md %>% 
+  inner_join(md2020) %>% 
+  mutate(genet_nursery = case_when(
+    Genotype == "P1" ~ "HS1",
+    Genotype == "P2" ~ "CN1",
+    Genotype == "P3" ~ "ML6",
+    Genotype == "P4" ~ "CN2",
+    Genotype == "P5" ~ "SL",
+    Genotype == "P6" ~ "CN3",
+    Genotype == "P7" ~ "CN4",
+    Genotype == "P8" ~ "ML2",
+    Genotype == "P9" ~ "SL5",
+    Genotype == "P10" ~ "SL1",
+    Genotype == "P11" ~ "AAA3",
+    Genotype == "P12" ~ "AAA2"
+  )) %>% 
+  inner_join(runtab2020) -> young2020_md
+
+# View(young2020_md)
+nrow(young2020_md)
+nrow(md2020)
+nrow(runtab2020)
+```
+
+Okay, 2023 a little harder as I am stupid and did not upload all the
+metadata to NCBI. So going to  
+1. get the data for the RNA samples.  
+2. import an old file with all the metadata so i can merge and get the
+correct information.  
+
+```{r reading in metadata 2023}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/young2023.csv") %>% 
+  dplyr::filter(!Organism %in% "coral metagenome") %>% 
+  dplyr::select(-BioSample) %>% 
+  rename(BioSample = Accession) %>%
+  dplyr::select(BioSample, Sample.name, SRA) %>%
+           mutate(Sample_name_unique = Sample.name) %>% 
+  dplyr::select(-Sample.name) -> rna_2023
+
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/ncbi_rna_2023.csv") -> ncbi2023
+View(ncbi2023)
+
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/SraRunTable2023.csv") %>% 
+  dplyr::select(Run, BioProject, BioSample) -> runtab2023
+
+rna_2023 %>% 
+  inner_join(ncbi2023) %>%
+  inner_join(runtab2023)-> young2023_md
+# View(young2023_md)
+
+nrow(rna_2023)
+nrow(young2023_md)
+```
+
+And 2024, this one is easy.
+
+```{r getting the 2024 metadata all read in and sorted}
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/young2024.csv") %>% 
+  dplyr::filter(!Organism %in% "coral metagenome") %>% 
+  dplyr::select(-BioSample) %>% 
+  dplyr::rename(BioSample = Accession) %>%
+  dplyr::select(BioSample, Sample.name, SRA) -> young2024_md
+nrow(young2024_md)
+# View(young2024_md)
+
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/treatment_file_2024.csv") %>% dplyr::rename(Sample.name = X.1) -> tfall2024
+
+read.csv(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/SraRunTable2024.csv") %>% 
+  dplyr::select(Run, BioProject, BioSample) -> runtab2024
+# View(runtab2024)
+
+young2024_md %>% 
+  inner_join(tfall2024, 
+             by = "Sample.name") %>%
+  left_join(runtab2024)-> young2024_md
+# View(young2024_md)
+
+## NB there are 4 smaples which dont have values as they failed and were not uploaded. 
+nrow(young2024_md)
+nrow(runtab2024)
+nrow(tfall2024)
+```
+
+### 1.2 - Combing all the data into a megaframe
+
+```{r having a look at the columns}
+# View(young2020_md)
+# View(young2023_md)
+# View(young2024_md)
+```
+
+```{r making young2020 completed}
+young2020_md %>% 
+  dplyr::select(-Genotype) %>%
+  rename(Genotype = genet_nursery) %>% 
+  mutate(Health = case_when(
+    Outcome == "baseline" ~ "pre_exposure",
+    Outcome == "no_transmission" ~ "visually_healthy", 
+    Outcome == "transmission" ~ "diseased"),
+    Environment = "insitu", 
+    Study = "young2020",
+    Location = "CRF_nursery",
+    Dtreatment = "coral_graft"
+    ) %>% 
+  dplyr::select(BioSample, SRA, Run, BioProject, Sample.name, Genotype,
+                Health, Location, Environment, Study, Year, Dtreatment) -> young2020_md_comp
+# View(young2020_md_comp)
+```
+
+```{r making young2023 completed}
+young2023_md %>% 
+  rename(Sample.name = original_sample_name) %>%
+    mutate(Environment = "exsitu", 
+    Study = "young2023",
+    Location = "ERL_Miami",
+    Dtreatment = "coral_graft", 
+    Year = "2022"
+    ) %>% 
+  dplyr::select(BioSample, SRA, Run, BioProject, Sample.name, Genotype,
+                Health, Location, Environment, Study, Year, Dtreatment) -> young2023_md_comp
+# View(young2023_md_comp)
+```
+
+```{r making young2024 completed}
+young2024_md %>%
+  rename(Location = X) %>%
+    mutate(Environment = "insitu", 
+    Study = "young2024",
+    Dtreatment = "none", 
+    Year = "2022", 
+    Health = "visually_healthy"
+    ) %>% 
+  dplyr::select(BioSample, SRA, Run, BioProject, Sample.name, Genotype,
+                Health, Location, Environment, Study, Year, Dtreatment) -> young2024_md_comp
+# View(young2024_md_comp)
+```
+
+Okay, and now combining it all. Need to remove the 4 that failed in 2024
+so rownames can be assigned.
+
+```{r combining all together}
+young2020_md_comp %>% 
+  rbind(young2023_md_comp) %>% 
+  rbind(young2024_md_comp) %>%
+  dplyr::mutate(salmon_name = paste0(Run, "_loca")) %>% 
+  dplyr::filter(!salmon_name %in% "NA_loca") %>% 
+  column_to_rownames(var = "salmon_name") -> megatfall
+
+# View(megatfall)
+nrow(megatfall)
+nrow(young2020_md_comp) + nrow(young2023_md_comp) + nrow(young2024_md_comp)
+```
+
+
+## 2. Making Count Matrices
+
+reading in the transcript to gene. Needs to be transcripts column 1 gene
+column 2
+
+```{r tr to gene import, include = F, echo = F}
+read.table(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/reference_genome/transcript_to_gene.txt") -> tr2gene
+
+nrow(tr2gene)
+```
+
+### 2.1 - Young 2020 Count
+
+```{r making list object of organised salmon files 2020, echo = F}
+list.files(path = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/align/young2020//",
+           full.names = F,
+           pattern = "\\_loca$") -> PPall_2020
+length(PPall_2020)
+
+FILESall_2020 <- file.path(PPall_2020,
+                      "quant.sf")
+
+names(FILESall_2020) <- PPall_2020
+length(FILESall_2020)
+all(file.exists(FILESall_2020))
+```
+
+```{r reading in with tximport}
+setwd("/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/align/young2020//")
+txi.salmon.count2020 <- tximport(FILESall_2020,
+                                type = "salmon", 
+                                tx2gene = tr2gene)
+
+txi.salmon.count2020$counts -> counts2020
+counts2020 %>% nrow()
+counts2020 %>% ncol()
+```
+
+
+### 2.2 - Young 2023 Count
+
+```{r making list object of organised salmon files 2020, echo = F}
+list.files(path = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/align/young2023//",
+           full.names = F,
+           pattern = "\\_loca$") -> PPall_2023
+length(PPall_2023)
+
+FILESall_2023 <- file.path(PPall_2023,
+                      "quant.sf")
+
+names(FILESall_2023) <- PPall_2023
+length(FILESall_2023)
+all(file.exists(PPall_2023))
+```
+
+```{r reading in with tximport}
+setwd("/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/align/young2023//")
+txi.salmon.count2023 <- tximport(FILESall_2023,
+                                type = "salmon", 
+                                tx2gene = tr2gene)
+
+txi.salmon.count2023$counts -> counts2023
+counts2023 %>% nrow()
+counts2023 %>% ncol()
+# View(counts2023)
+```
+
+### 2.2 - Young 2024 Count
+
+```{r making list object of organised salmon files 2020, echo = F}
+list.files(path = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/align/young2024//",
+           full.names = F,
+           pattern = "\\_loca$") -> PPall_2024
+length(PPall_2024)
+
+FILESall_2024 <- file.path(PPall_2024,
+                      "quant.sf")
+
+names(FILESall_2024) <- PPall_2024
+length(FILESall_2024)
+all(file.exists(PPall_2024))
+```
+
+```{r reading in with tximport}
+setwd("/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/align/young2024//")
+txi.salmon.count2024 <- tximport(FILESall_2024,
+                                type = "salmon", 
+                                tx2gene = tr2gene)
+
+txi.salmon.count2024$counts -> counts2024
+counts2024 %>% nrow()
+counts2024 %>% ncol()
+```
+
+### 2.3 - Meagcountframe
+
+```{r making the megacount file with all studies}
+counts2020 %>% nrow()
+counts2023 %>% nrow()
+counts2024 %>% nrow()
+## all have same number of genes yay. 
+
+ncol(counts2020) + ncol(counts2023) + ncol(counts2024)
+## 755 samples total in all count dataframes
+
+counts2020 %>% 
+  as.data.frame() %>%
+  rownames_to_column(var = "genes") %>% 
+  inner_join(counts2023 %>% 
+               as.data.frame() %>% 
+               rownames_to_column(var = "genes")) %>% 
+  inner_join(counts2024 %>% 
+               as.data.frame() %>% 
+               rownames_to_column(var = "genes")) %>% 
+  column_to_rownames(var = "genes") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "sample_names") %>% 
+  dplyr::filter(sample_names %in% rownames(megatfall)) %>% 
+  column_to_rownames(var = "sample_names") %>% 
+  t() %>% 
+  as.data.frame() -> megacount
+
+# View(megacount)
+ncol(megacount)
+## 755 samples yay
+nrow(megacount)
+## 30,455 genes yay
+```
+
+
+## 3. Writing Data to RData Objects
+
+```{r saving tximport objects to rdata, include = F, echo = F}
+# save(txi.salmon.count2020, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/txi.salmon.count2020")
+# save(txi.salmon.count2023, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/txi.salmon.count2023")
+# save(txi.salmon.count2024, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/txi.salmon.count2024")
+```
+
+```{r saving count objects to rdata, include = F, echo = F}
+# save(counts2020, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/counts2020")
+# save(counts2023, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/counts2023")
+# save(counts2024, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/counts2024")
+# save(megacount, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/megacount")
+```
+
+```{r writing metadata objects}
+# save(young2020_md, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/young2020_md")
+# save(young2023_md, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/young2023_md")
+# save(young2024_md, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/young2024_md")
+# save(megatfall, 
+#      file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/megatfall")
+```
+
+
+# Main Analysis
+
+## 5. Pre-analysis Filtering
+### 5.1 - Selecting Genets Samples
+
+```{r installing packages, include = F}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("DESeq2")
+# BiocManager::install("edgeR")
+# BiocManager::install("DEGreport")
+# BiocManager::install("clusterProfiler")
+# BiocManager::install("biocLite")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("clusterProfiler")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("fgsea")
+```
+
+```{r library loading, include = F, echo = F}
+library(tidyverse)
+library(DESeq2)
+library(edgeR)
+library(DEGreport)
+library(Biostrings)
+library(WGCNA)
+library(PCAtools)
+library(dendextend)
+library(ggdendro)
+library(Biostrings)
+```
+
+```{r loading objects, include = F, echo = F}
+load(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/megacount")
+load(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/megatfall")
+load(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/annot_complete.RData")
+# View(annot_complete)
+```
+
+As we went to the gene level I need to remove isoforms. To do this choosing the longest gene and keeping that annotation. 
+BUT, the isofroms are the same length, so just keeping T1 for all of them. 
+
+```{r geeting annotation to the gene level}
+# annot_complete %>%
+#   mutate(length = abs(Stop-Start) + 1) %>% 
+#   group_by(GeneID) %>%
+#   filter(n() > 1) %>% 
+#   ungroup() %>% View()
+
+annot_complete %>%
+  filter(str_ends(TranscriptID, "-T1")) -> annot_comp_gene
+```
+
+So initial part is to make sure we only have CN2, CN4, HS1, and ML2.
+There are some in 2020 that are not those genets.
+
+```{r subsetting for correct genets}
+megatfall %>% 
+  dplyr::filter(Genotype %in% c("CN2", "ML2", "CN4", "HS1")) -> megatfall_genets
+nrow(megatfall_genets)
+
+megacount %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "samps") %>% 
+  dplyr::filter(samps %in% rownames(megatfall_genets)) %>% 
+  column_to_rownames(var = "samps") %>% 
+  t() %>% 
+  as.data.frame() -> megacount_genets
+```
+
+```{r sample count summaries, echo = F}
+nrow(megatfall)
+megatfall %>% 
+  group_by(Study) %>% 
+  summarise(count = n())
+nrow(megatfall_genets)
+megatfall_genets %>% 
+  group_by(Genotype) %>% 
+  summarise(count = n())
+```
+
+
+```{r Making sure all count and treatment files match, echo = F}
+matchup <- match(rownames(megatfall_genets), colnames(megacount_genets))
+megacount_genets  <- megacount_genets[,matchup ]
+all(rownames(megatfall_genets) == colnames(megacount_genets))
+# View(megacount_genets)
+```
+
+Also generated the percentage mapping file so we can read that and get some summaries
+
+```{r}
+read.table(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/metadata/mapping_summary.tsv", 
+           sep = "\t", 
+           header = T) %>% 
+  inner_join(megatfall %>% 
+               rownames_to_column(var = "Sample") %>%
+               dplyr::select(Sample, Study, Genotype)) -> map_percents
+# View(map_percents)
+
+map_percents %>%
+  mutate(Mapping_Percentage = as.numeric(str_remove(Mapping_Percentage, "%"))) %>%
+  group_by(Study) %>%
+  summarise(
+    Avg_Mapping_Percentage = mean(Mapping_Percentage, na.rm = TRUE),
+    .groups = 'drop'
+  )
+```
+
+And writing all the tables for SUpplementary File 1
+
+```{r writing summary spreadsheets for manuscript, include = F}
+write.csv(map_percents, 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/map_precents.csv")
+write.csv(megatfall, 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/all_metadata.csv")
+write.csv(megatfall_genets, 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/genet_metadata.csv")
+```
+
+
+### 5.2 - Removing Low Count Samples
+
+Okay so first thing to do is to remove low count samples
+
+```{r generating mean and median gene counts pre-filtering, echo = F}
+megacount_genets %>%
+  t() %>%
+  as.data.frame() %>%
+  dplyr::mutate(gene_counts = rowSums(
+    megacount_genets %>%
+      t() %>%
+      as.data.frame() %>%
+      dplyr::select(starts_with("jaA"))
+  )) %>%
+  rownames_to_column(var = "Sample_number") %>% 
+  dplyr::select(Sample_number, gene_counts) %>%
+  arrange(gene_counts) %>%
+  summarize(Average = mean(gene_counts),
+            Median = median(gene_counts),
+            Standard_Deviation = sd(gene_counts))
+```
+
+Okay so I think I am going to remove anything with reads less than
+500,000.
+
+```{r generating filtering object of samples with less than 950000 total counts, echo = F}
+megacount_genets %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(gene_counts = rowSums(megacount_genets %>%
+                                 t() %>%
+                                 as.data.frame() %>%
+                                 dplyr::select(starts_with("jaA")))) %>% 
+  rownames_to_column(var = "Sample_number") %>%
+  dplyr::select(Sample_number, gene_counts) %>%
+  arrange(gene_counts) %>%
+  filter(gene_counts < 500000) %>%
+  column_to_rownames(var = "Sample_number") %>%
+  rownames() -> lowcount_samps
+length(lowcount_samps)
+```
+
+Gives a total of *8* samples that need to be removed.
+
+```{r filtering samples with less than 500000 total counts, echo = F}
+megacount_genets %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "Samp") %>%
+  filter(!Samp %in% lowcount_samps) %>%
+  column_to_rownames(var = "Samp") %>% 
+  t() %>% 
+  as.matrix() -> megacount_genets_filt
+
+ncol(megacount_genets_filt)
+ncol(megacount_genets)
+ncol(megacount_genets) - ncol(megacount_genets_filt)
+nrow(megacount_genets_filt)
+#View(DHE_counts)
+```
+
+```{r removing the low total count samples from the treatment file, include = F}
+megatfall_genets %>% 
+  rownames_to_column(var = "samp") %>% 
+  dplyr::filter(!samp %in% lowcount_samps) %>% 
+  column_to_rownames(var = "samp") -> megatfall_genets_filt
+```
+
+```{r reordering tfall with count table after filtering of both objects, echo = F}
+matchup <- match(rownames(megatfall_genets_filt), colnames(megacount_genets_filt))
+megacount_genets_filt  <- megacount_genets_filt[,matchup ]
+all(rownames(megatfall_genets_filt) == colnames(megacount_genets_filt))
+```
+
+
+### 5.3 - Removing Low Count Genes
+
+```{r checking count frame}
+ncol(megacount_genets_filt)
+nrow(megacount_genets_filt)
+```
+
+```{r Making DeSeq object for low gene count filtering, include=FALSE}
+ddsgenet = DESeqDataSetFromMatrix(countData =  round(megacount_genets_filt),
+                                  megatfall_genets_filt,
+                                  ~ Study + Genotype)
+```
+
+Okay so for filtering I am going to do 
+- 2 CPM 
+- 69 samples which is 10%
+
+```{r cpm filtering}
+nrow(ddsgenet)
+ncol(ddsgenet)
+
+# cpm filtering step and seeing what original VS filtered gene number left is
+cpmgenet <- counts(ddsgenet)
+keep <- rowSums(cpm(cpmgenet)>=2) >= 69
+cpmgenet <- cpmgenet[keep, ]
+
+nrow(ddsgenet)
+ncol(ddsgenet)
+nrow(cpmgenet)
+ncol(cpmgenet)
+
+cpmgenet %>%
+  as.data.frame() -> cpmgenet
+  
+ddsgenet <- DESeqDataSetFromMatrix(countData = cpmgenet, 
+                                 colData = megatfall_genets_filt, 
+                                 design = ~ Study + Genotype)
+```
+
+And that gives us the following. 
+- 693 samples 
+- 17,554 genes.
+
+
+### 5.4 - Gene Count Summary and Sample Summary
+
+```{r sample summaries for analysis, echo = F}
+megatfall_genets_filt %>% 
+  group_by(Genotype, Study) %>% 
+  summarise(count = n())
+
+megatfall_genets_filt %>% 
+  group_by(Genotype) %>% 
+  summarise(count = n())
+
+megatfall_genets_filt %>% 
+  group_by(Study) %>% 
+  summarise(count = n())
+
+# megatfall_genets_filt %>% 
+#   group_by(Genotype, health_location) %>% 
+#   summarise(count = n())
+```
+
+
+### 5.5 - Clust variable for POR 2024
+
+So remember there was a unexplained variable that split samples in 2024 samples. Need to include here as well.
+
+```{r getting 2024 samples}
+megatfall_genets_filt %>%
+  dplyr::filter(Study %in% "young2024") -> young2024_md
+
+cpmgenet %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "samps") %>% 
+  dplyr::filter(samps %in% rownames(young2024_md)) %>% 
+  column_to_rownames(var = "samps") %>% 
+  t() %>% 
+  as.data.frame() -> young2024_count
+
+# View(young2024_md)
+```
+
+```{r matching up stuff}
+matchup <- match(rownames(young2024_md), colnames(young2024_count))
+young2024_count  <- young2024_count[,matchup ]
+all(rownames(young2024_md) == colnames(young2024_count))
+```
+
+```{r VST with limma removing genet variance, include = F}
+ddsall <- DESeqDataSetFromMatrix(countData = round(young2024_count), 
+                                 colData = young2024_md, 
+                                 design = ~ Location + Genotype)
+
+vsdgeno <- vst(ddsall)
+assay(vsdgeno) <- limma::removeBatchEffect(assay(vsdgeno),
+                                           batch = vsdgeno$Genotype)
+```
+
+```{r Genes for WGCNA and checking they all a-okay, echo = F}
+genes4wgcna <- assay(vsdgeno)
+genes4wgcna <- t(genes4wgcna)
+genes4wgcna <- as.data.frame(genes4wgcna)
+nrow(genes4wgcna)
+dim(genes4wgcna)
+
+gsg = goodSamplesGenes(genes4wgcna, verbose = 3)
+gsg$allOK
+```
+
+```{r checking for outliers, fig.width=10, fig.height=10}
+sampleTree = hclust(dist(genes4wgcna), method = "ward.D2")
+
+sizeGrWindow(12,9)
+par(cex = 0.5);
+par(mar = c(0,4,2,0))
+plot(
+  sampleTree,
+  main = "Sample clustering to detect outliers",
+  sub = "",
+  xlab = "",
+  cex.lab = 0.5,
+  cex.axis = 0.5,
+  cex.main = 0.5
+)
+abline(h = 450, col = "red")
+```
+
+```{r plotting hclust with metadata variables, echo = F}
+hclust(dist(genes4wgcna), method = "ward.D2") %>% 
+  as.dendrogram() -> sampleTree_gg
+
+dendrogram_data <- dendro_data(sampleTree_gg)
+dendrogram_segments <- dendrogram_data$segments
+
+dendrogram_segments %>%
+ filter(yend == 0) %>% 
+ left_join(dendrogram_data$labels, by = "x") %>% 
+ dplyr::rename(sample_name = label) %>%
+ left_join(young2024_md %>% 
+             rownames_to_column(var = "sample_name"), 
+           by = "sample_name") -> dendrogram_ends
+
+ggplot() +
+  geom_segment(data = dendrogram_segments,
+               aes(
+                 x = x,
+                 y = y,
+                 xend = xend,
+                 yend = yend
+               )) +
+  geom_segment(data = dendrogram_ends,
+               aes(
+                 x = x,
+                 y = y.x,
+                 xend = xend,
+                 yend = yend,
+                 color = Location
+               )) +
+  theme_bw() + 
+  scale_color_manual(values = c("tan1", "firebrick3", "deepskyblue"), 
+                     name = "Reef Sites")
+
+ggplot() +
+  geom_segment(data = dendrogram_segments,
+               aes(
+                 x = x,
+                 y = y,
+                 xend = xend,
+                 yend = yend
+               )) +
+  geom_segment(data = dendrogram_ends,
+               aes(
+                 x = x,
+                 y = y.x,
+                 xend = xend,
+                 yend = yend,
+                 color = Genotype
+               )) +
+  theme_bw() + 
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60"))
+```
+
+```{r making clusters based on tree cut height, fig.height=20, fig.width=20, include = F}
+clust = cutreeStatic(sampleTree, cutHeight = 420, minSize = 10)
+table(clust)
+```
+
+```{r making dataframes with clusters present from hc, include = F}
+genes4wgcna %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "BN_salmon") %>% 
+  cbind(clust) %>%
+  dplyr::select(BN_salmon, clust) %>%
+  inner_join(young2024_md %>%
+               rownames_to_column(var = "BN_salmon")) %>%
+  column_to_rownames(var = "BN_salmon") -> young2024_md
+# View(young2024_md)
+```
+
+```{r VST with limma removing genet variance, include = F}
+ddsall <- DESeqDataSetFromMatrix(countData = young2024_count, 
+                                 colData = young2024_md, 
+                                 design = ~ Location + Genotype)
+
+vsdgeno <- vst(ddsall)
+assay(vsdgeno) <- limma::removeBatchEffect(assay(vsdgeno),
+                                           batch = vsdgeno$Genotype)
+```
+
+```{r Genes for WGCNA and checking they all a-okay, echo = F}
+genes4wgcna <- assay(vsdgeno)
+genes4wgcna <- t(genes4wgcna)
+genes4wgcna <- as.data.frame(genes4wgcna)
+nrow(genes4wgcna)
+dim(genes4wgcna)
+
+gsg = goodSamplesGenes(genes4wgcna, verbose = 3)
+gsg$allOK
+```
+
+```{r plotting hc with included identified clusters to make sure everything aligns, echo = F}
+hclust(dist(genes4wgcna), method = "ward.D2") %>% 
+  as.dendrogram() -> sampleTree_gg
+
+dendrogram_data <- dendro_data(sampleTree_gg)
+dendrogram_segments <- dendrogram_data$segments
+dendrogram_ends %>% 
+  mutate(clust = as.factor(clust))
+
+dendrogram_segments %>%
+ filter(yend == 0) %>%
+ left_join(dendrogram_data$labels, by = "x") %>% 
+ dplyr::rename(sample_name = label) %>%
+ left_join(young2024_md %>% 
+             rownames_to_column(var = "sample_name"), 
+           by = "sample_name") -> dendrogram_ends
+ggplot() +
+  geom_segment(data = dendrogram_segments,
+               aes(
+                 x = x,
+                 y = y,
+                 xend = xend,
+                 yend = yend
+               )) +
+  geom_segment(data = dendrogram_ends %>% 
+                 mutate(clust = as.factor(clust)),
+               aes(
+                 x = x,
+                 y = y.x,
+                 xend = xend,
+                 yend = yend,
+                 color = clust
+               )) +
+  theme_bw() + 
+  scale_color_manual(values = c("dodgerblue3", "grey20"))
+```
+
+Okay nice so I now have the clust variable and I need to include this into the mega filtered data frame. 
+- 2024 = have it calculated (1 and 2) 
+- 2023 = just have one value (3) 
+- 2020 = have 2016 and 2017 as values (4 and 5)
+
+```{r updating metadata file for all analyses, include=F, echo = F}
+megatfall_genets_filt %>% 
+  dplyr::filter(!Study %in% "young2024") %>% 
+  rownames_to_column(var ="Samp_name") %>%
+  mutate(clust = case_when(
+    Year == "2016" ~ "4",
+    Year == "2017" ~ "5", 
+    Study == "young2023" ~ "3"
+  )) %>%
+  full_join(young2024_md %>% 
+              rownames_to_column(var = "Samp_name") %>%
+              mutate(clust = as.character(clust))) %>% 
+  mutate(seq_tech = case_when(
+    Study == "young2023" ~ "threeprime",
+    Study == "young2024" ~ "threeprime", 
+    Study == "young2020" ~ "traditional"
+  )) %>%
+  mutate(health_location = case_when(
+    Study == "young2020" & Health == "pre_exposure" ~ "field_seawater",
+    Study == "young2020" & Health == "visually_healthy" ~ "visually_healthy", 
+    Study == "young2020" & Health == "diseased" ~ "diseased",
+    Study == "young2023" & Health == "pre_exposure" ~ "lab_seawater",
+    Study == "young2023" & Health == "visually_healthy" ~ "visually_healthy", 
+    Study == "young2023" & Health == "diseased" ~ "diseased",
+    Study == "young2024" & Health == "visually_healthy" ~ "field_seawater"
+  )) %>%
+  column_to_rownames(var = "Samp_name") -> megatfall_genets_filt
+```
+
+```{r ordering and making sure everything is good}
+matchup <- match(rownames(megatfall_genets_filt), colnames(cpmgenet))
+cpmgenet  <- cpmgenet[,matchup ]
+all(rownames(megatfall_genets_filt) == colnames(cpmgenet))
+
+ncol(cpmgenet)
+nrow(cpmgenet)
+ncol(megatfall_genets_filt)
+nrow(megatfall_genets_filt)
+```
+
+It is, yay can move on to some initial visualization.
+
+
+## 5. Initial PCA Visualisation
+
+So we have 
+- cpmgenet = the filtered count matrix with low count samples removed 
+- megatfall_genets_filt = the metadata with low count samples removed
+
+```{r loading pca functions, include = F}
+load(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/pca23.RData")
+load(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/pca34.RData")
+load(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/pca45.RData")
+load(file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/rdata_objects/pca56.RData")
+```
+
+
+### 5.1 - All Data
+
+```{r making deseq object, include = F}
+ddscomb <- DESeqDataSetFromMatrix(countData = cpmgenet, 
+                                 colData = megatfall_genets_filt, 
+                                 design = ~ Study + Genotype)
+```
+
+```{r VST, include=FALSE}
+vsdcomb <- vst(ddscomb, blind=FALSE)
+```
+
+```{r Formating VST for PCAtools so it works the same as plotPCA function, include = F}
+PCA_tools_all <- assay(vsdcomb)
+rv <- rowVars(PCA_tools_all)
+select <- order(rv,
+                decreasing = TRUE)[seq_len(min(500,
+                                               length(rv)))]
+allsamps <- pca(PCA_tools_all[select, ],
+                metadata = megatfall_genets_filt, 
+                removeVar = 0.10)
+```
+
+```{r Plots from PCAtools, echo = F, fig.width=7, fig.height=4}
+## Plot showing the genes which drive the principal component variances. 
+plotloadings(allsamps, labSize = 1)
+```
+
+```{r percentages for the PCs for plots}
+allsamps$variance %>% 
+  as.data.frame() %>% View()
+```
+
+```{r EigenPlots, echo = F, fig.width=13, fig.height = 5}
+# megatfall_genets_filt %>% View()
+
+# Plotting of the metadata to the PC axes to see which one has strong significant relationships with axes. 
+eigencorplot(allsamps,
+             components = getComponents(allsamps, 1:10),
+    metavars = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"), 
+    col = c('darkblue', 'blue2', 'black', 'red2', 'darkred'),
+    cexCorval = 0.7,
+    colCorval = 'white',
+    fontCorval = 2,
+    posLab = 'bottomleft',
+    rotLabX = 45,
+    posColKey = 'top',
+    cexLabColKey = 1.5,
+    scale = TRUE,
+    main = 'PC1 - 11, Metadata Correlations',
+    colFrame = 'white',
+    plotRsquared = FALSE)
+
+eigencorplot(allsamps,
+             components = getComponents(allsamps, 1:11),
+    metavars = c("Genotype", "Study", "Location", "Environment", "seq_tech", "health_location"), 
+    col = c('white', 'cornsilk1', 'gold', 'forestgreen', 'darkgreen'),
+    cexCorval = 1.2,
+    fontCorval = 2,
+    posLab = 'all',
+    rotLabX = 45,
+    scale = TRUE,
+    main = bquote(Principal~Component~Pearson~r^2~metadata~significant~correlation),
+    plotRsquared = T,
+    corFUN = 'pearson',
+    corUSE = 'pairwise.complete.obs',
+    corMultipleTestCorrection = 'BH',
+    signifSymbols = c('****', '***', '**', '*', ''),
+    signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1))
+```
+
+```{r PCA of the Samples, include= F}
+## not transposing the CLR for the PCA
+pca_samp <- prcomp(t(PCA_tools_all)[,select])
+sample_loadings <- as.data.frame(pca_samp$x)
+summary(pca_samp)
+```
+
+```{r PC axis dataframes for plotting in ggplot, include = F}
+pca12 <-
+  plotPCA(
+    vsdcomb,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+
+pca23 <-
+  pcaaxes23(
+    vsdcomb,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+
+pca34 <-
+  pcaaxes34(
+    vsdcomb,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+
+pca45 <-
+  pcaaxes45(
+    vsdcomb,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+
+pca56 <-
+  pcaaxes56(
+    vsdcomb,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("health_location"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("health_location"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("health_location"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("health_location"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("health_location"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("Study"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("Study"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("Study"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("Study"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("Study"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("clust"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("clust"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("clust"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("clust"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("clust"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("Genotype"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("Genotype"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("Genotype"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("Genotype"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("Genotype"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("Health"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("Health"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("Health"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("Health"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("Health"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("Location"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("Location"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("Location"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("Location"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("Location"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("seq_tech"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("seq_tech"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("seq_tech"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("seq_tech"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("seq_tech"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("Environment"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("Environment"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("Environment"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("Environment"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("Environment"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("Year"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("Year"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("Year"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("Year"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("Year"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdcomb, intgroup=c("Dtreatment"), returnData = F)
+pcaaxes23(vsdcomb, intgroup=c("Dtreatment"), returnData = F)
+pcaaxes34(vsdcomb, intgroup=c("Dtreatment"), returnData = F)
+pcaaxes45(vsdcomb, intgroup=c("Dtreatment"), returnData = F)
+pcaaxes56(vsdcomb, intgroup=c("Dtreatment"), returnData = F)
+```
+
+```{r ggplot pcs plots with no variance removed, echo = F}
+### PC1 and PC2
+ggplot(pca12, 
+       aes(PC1, 
+           PC2, 
+           color = Study, 
+           shape = seq_tech)) +
+  geom_point(size = 1.5)  +
+  xlab(paste0("PC1 37% variance")) +
+  ylab(paste0("PC2 11% variance")) +
+  theme(
+    text = element_text(size = 11, family = "Arial"),
+    legend.position = "right",
+    panel.background = element_rect(fill = "transparent"),
+    axis.line = element_line(colour = "black"),
+    legend.key = element_rect(fill = "transparent"),
+    axis.text = element_text(size = 8)
+  ) +
+  theme(legend.key.size = unit(0.7, "cm")) +
+  stat_ellipse(
+    geom = "polygon",
+    aes(group = Study, 
+        fill = Study, 
+        color = Study),
+    type = "norm",
+    alpha = 0.10
+  ) +
+  scale_color_manual(name = "Study",
+                     values = c("darkslateblue", "black" , "grey70"), 
+                     labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)")) +
+  scale_fill_manual(name = "Study",
+                    values = c("darkslateblue", "black" , "grey70"),
+                    labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)")) + 
+  scale_shape_manual(name = "RNA-seq Type", 
+                     values = c(16,17), 
+                     labels = c("3' Quant-seq", "Traditional RNA-seq"))
+
+### PC2 and PC3
+ggplot(pca23, 
+       aes(PC2, 
+           PC3, 
+           color = Study, 
+           shape = seq_tech)) +
+  geom_point(size = 1.5)  +
+  xlab(paste0("PC2 11% variance")) +
+  ylab(paste0("PC3 7% variance")) +
+  theme(
+    text = element_text(size = 11, family = "Arial"),
+    legend.position = "right",
+    panel.background = element_rect(fill = "transparent"),
+    axis.line = element_line(colour = "black"),
+    legend.key = element_rect(fill = "transparent"),
+    axis.text = element_text(size = 8)
+  ) +
+  theme(legend.key.size = unit(0.7, "cm")) +
+  stat_ellipse(
+    geom = "polygon",
+    aes(group = Study, 
+        fill = Study, 
+        color = Study),
+    type = "norm",
+    alpha = 0.10
+  ) +
+  scale_color_manual(name = "Study",
+                     values = c("darkslateblue", "black" , "grey70"), 
+                     labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)")) +
+  scale_fill_manual(name = "Study",
+                    values = c("darkslateblue", "black" , "grey70"),
+                    labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)")) + 
+  scale_shape_manual(name = "RNA-seq Type", 
+                     values = c(16,17), 
+                     labels = c("3' Quant-seq", "Traditional RNA-seq"))
+
+### PC3 and PC4
+ggplot(pca34, 
+       aes(PC3, 
+           PC4, 
+           color = Genotype, 
+           shape = Study)) +
+  geom_point(size = 1.5)  +
+  xlab(paste0("PC3 7% variance")) +
+  ylab(paste0("PC4 5% variance")) +
+  theme(
+    text = element_text(size = 11, family = "Arial"),
+    legend.position = "right",
+    panel.background = element_rect(fill = "transparent"),
+    axis.line = element_line(colour = "black"),
+    legend.key = element_rect(fill = "transparent"),
+    axis.text = element_text(size = 8)
+  ) +
+  theme(legend.key.size = unit(0.7, "cm")) +
+  stat_ellipse(
+    geom = "polygon",
+    aes(group = Genotype, 
+        fill = Genotype, 
+        color = Genotype),
+    type = "norm",
+    alpha = 0.10
+  ) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) +
+  scale_fill_manual(name = "Genotype",
+                    values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  scale_shape_manual(name = "Study", 
+                     values = c(16,17,15), 
+                     labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)"))
+
+## PC45
+ggplot(pca45, 
+       aes(PC4, 
+           PC5, 
+           color = Genotype, 
+           shape = Study)) +
+  geom_point(size = 1.5)  +
+  xlab(paste0("PC4 5% variance")) +
+  ylab(paste0("PC5 5% variance")) +
+  theme(
+    text = element_text(size = 11, family = "Arial"),
+    legend.position = "right",
+    panel.background = element_rect(fill = "transparent"),
+    axis.line = element_line(colour = "black"),
+    legend.key = element_rect(fill = "transparent"),
+    axis.text = element_text(size = 8)
+  ) +
+  theme(legend.key.size = unit(0.7, "cm")) +
+  stat_ellipse(
+    geom = "polygon",
+    aes(group = Genotype, 
+        fill = Genotype, 
+        color = Genotype),
+    type = "norm",
+    alpha = 0.10
+  ) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) +
+  scale_fill_manual(name = "Genotype",
+                    values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  scale_shape_manual(name = "Study", 
+                     values = c(16,17,15), 
+                     labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)"))
+```
+
+
+
+### 5.1 - Removing Locaton and RNA Seq Method
+
+```{r}
+ddscomb <- DESeqDataSetFromMatrix(countData = cpmgenet, 
+                                 colData = megatfall_genets_filt, 
+                                 design = ~ Study + Genotype)
+```
+
+```{r VST, include=FALSE}
+vsdstudy <- vst(ddscomb, blind=FALSE)
+assay(vsdstudy) <- limma::removeBatchEffect(assay(vsdstudy), 
+                                           batch = vsdstudy$Environment, 
+                                           batch2 = vsdstudy$seq_tech)
+```
+
+```{r Formating VST for PCAtools so it works the same as plotPCA function, include = F}
+PCA_tools_all <- assay(vsdstudy)
+rv <- rowVars(PCA_tools_all)
+select <- order(rv,
+                decreasing = TRUE)[seq_len(min(500,
+                                               length(rv)))]
+allsamps <- pca(PCA_tools_all[select, ],
+                metadata = megatfall_genets_filt, 
+                removeVar = 0.10)
+```
+
+```{r Plots from PCAtools, echo = F}
+## Plot showing the genes which drive the principal component variances. 
+plotloadings(allsamps, labSize = 3)
+```
+
+```{r percentage laodings for plots}
+# allsamps$variance %>% 
+#   as.data.frame() %>% View()
+```
+
+```{r EigenPlots, echo = F, fig.width=13, fig.height = 5}
+# Plotting of the metadata to the PC axes to see which one has strong significant relationships with axes. 
+eigencorplot(allsamps,
+             components = getComponents(allsamps, 1:10),
+    metavars = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"), 
+    col = c('darkblue', 'blue2', 'black', 'red2', 'darkred'),
+    cexCorval = 0.7,
+    colCorval = 'white',
+    fontCorval = 2,
+    posLab = 'bottomleft',
+    rotLabX = 45,
+    posColKey = 'top',
+    cexLabColKey = 1.5,
+    scale = TRUE,
+    main = 'PC1 - 11, Metadata Correlations',
+    colFrame = 'white',
+    plotRsquared = FALSE)
+
+eigencorplot(allsamps,
+             components = getComponents(allsamps, 1:11),
+    metavars = c("Genotype", "Study", "Location", "Environment", "seq_tech", "health_location"), 
+    col = c('white', 'cornsilk1', 'gold', 'forestgreen', 'darkgreen'),
+    cexCorval = 1.2,
+    fontCorval = 2,
+    posLab = 'all',
+    rotLabX = 45,
+    scale = TRUE,
+    main = bquote(Principal~Component~Pearson~r^2~metadata~significant~correlation),
+    plotRsquared = T,
+    corFUN = 'pearson',
+    corUSE = 'pairwise.complete.obs',
+    corMultipleTestCorrection = 'BH',
+    signifSymbols = c('****', '***', '**', '*', ''),
+    signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1)
+    )
+```
+
+```{r PCA of the Samples, include= F}
+## not transposing the CLR for the PCA
+pca_samp <- prcomp(t(PCA_tools_all)[,select])
+sample_loadings <- as.data.frame(pca_samp$x)
+summary(pca_samp)
+```
+
+```{r PC axis dataframes for plotting in ggplot, include = F}
+pca12 <-
+  plotPCA(
+    vsdstudy,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+
+pca23 <-
+  pcaaxes23(
+    vsdstudy,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+
+pca34 <-
+  pcaaxes34(
+    vsdstudy,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+
+pca45 <-
+  pcaaxes45(
+    vsdstudy,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+
+pca56 <-
+  pcaaxes56(
+    vsdstudy,
+    intgroup = c("Genotype", "Study", "clust", "Health", "Location", "Environment", "Study", "Year", "Dtreatment", "seq_tech", "health_location"),
+    returnData = TRUE
+  )
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("health_location"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("health_location"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("health_location"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("health_location"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("health_location"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("Study"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("Study"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("Study"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("Study"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("Study"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("clust"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("clust"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("clust"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("clust"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("clust"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("Genotype"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("Genotype"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("Genotype"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("Genotype"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("Genotype"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("Health"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("Health"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("Health"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("Health"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("Health"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("Location"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("Location"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("Location"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("Location"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("Location"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("seq_tech"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("seq_tech"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("seq_tech"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("seq_tech"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("seq_tech"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("Environment"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("Environment"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("Environment"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("Environment"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("Environment"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("Year"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("Year"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("Year"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("Year"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("Year"), returnData = F)
+```
+
+```{r DeSeq2 PCAs for % loadings, echo = F}
+plotPCA(vsdstudy, intgroup=c("Dtreatment"), returnData = F)
+pcaaxes23(vsdstudy, intgroup=c("Dtreatment"), returnData = F)
+pcaaxes34(vsdstudy, intgroup=c("Dtreatment"), returnData = F)
+pcaaxes45(vsdstudy, intgroup=c("Dtreatment"), returnData = F)
+pcaaxes56(vsdstudy, intgroup=c("Dtreatment"), returnData = F)
+```
+
+Okay so that looks dope, removing the study variance ONLY and the genet pattern is holding super strong.
+
+Now to make some nice looking PCA plots using `ggplot`
+
+To keep constant with Young et all (2023) and (2024), using the following color values for genets. 
+CN2 - `wheat3` 
+CN4 - `navy` 
+HS1 - `springgreen3` 
+ML2 - `grey60`
+
+```{r ggplot pcs of genet with batch removed, echo = F}
+### PC1 and PC2
+ggplot(pca12, 
+       aes(PC1, 
+           PC2, 
+           color = Genotype, 
+           shape = Study)) +
+  geom_point(size = 1.5)  +
+  xlab(paste0("PC1 14% variance")) +
+  ylab(paste0("PC2 12% variance")) +
+  theme(
+    text = element_text(size = 11, family = "Arial"),
+    legend.position = "right",
+    panel.background = element_rect(fill = "transparent"),
+    axis.line = element_line(colour = "black"),
+    legend.key = element_rect(fill = "transparent"),
+    axis.text = element_text(size = 8)
+  ) +
+  theme(legend.key.size = unit(0.7, "cm")) +
+  stat_ellipse(
+    geom = "polygon",
+    aes(group = Genotype, fill = Genotype, color = Genotype),
+    type = "norm",
+    alpha = 0.10
+  ) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) +
+  scale_fill_manual(name = "Genotype",
+                    values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  scale_shape_manual(name = "Study", 
+                     values = c(16,17,15), 
+                     labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)"))
+
+### PC2 and PC3
+ggplot(pca23, 
+       aes(PC2, 
+           PC3, 
+           color = Genotype, 
+           shape = Study)) +
+  geom_point(size = 2) +
+  xlab(paste0("PC2 12% variance")) +
+  ylab(paste0("PC3 10% variance")) +
+  theme(
+    text = element_text(size = 11, family = "Arial"),
+    legend.position = "right",
+    panel.background = element_rect(fill = "transparent"),
+    axis.line = element_line(colour = "black"),
+    legend.key = element_rect(fill = "transparent"),
+    axis.text = element_text(size = 8)
+  )  +
+  theme(legend.key.size = unit(0.7, "cm")) +
+  stat_ellipse(
+    geom = "polygon",
+    aes(PC2,
+        PC3,
+        group = Genotype,
+        color = Genotype,
+        fill = Genotype),
+    type = "norm",
+    alpha = 0.10
+  ) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) +
+  scale_fill_manual(name = "Genotype",
+                    values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  scale_shape_manual(name = "Study", 
+                     values = c(16,17,15), 
+                     labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)"))
+
+### PC3 and PC4
+ggplot(pca34, 
+       aes(PC3, 
+           PC4, 
+           color = Genotype, 
+           shape = Study)) +
+  geom_point(size = 2) +
+  xlab(paste0("PC3 10% variance")) +
+  ylab(paste0("PC4 9% variance")) +
+  theme(
+    text = element_text(size = 11, family = "Arial"),
+    legend.position = "right",
+    panel.background = element_rect(fill = "transparent"),
+    axis.line = element_line(colour = "black"),
+    legend.key = element_rect(fill = "transparent"),
+    axis.text = element_text(size = 8)
+  )  +
+  theme(legend.key.size = unit(0.7, "cm")) +
+  stat_ellipse(
+    geom = "polygon",
+    aes(PC3,
+        PC4,
+        group = Genotype,
+        color = Genotype,
+        fill = Genotype),
+    type = "norm",
+    alpha = 0.10
+  ) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) +
+  scale_fill_manual(name = "Genotype",
+                    values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  scale_shape_manual(name = "Study", 
+                     values = c(16,17,15), 
+                     labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)"))
+
+## PC45
+ggplot(pca45, 
+       aes(PC4, 
+           PC5, 
+           color = Genotype, 
+           shape = Study)) +
+  geom_point(size = 2) +
+  xlab(paste0("PC4 9% variance")) +
+  ylab(paste0("PC5 5% variance")) +
+  theme(
+    text = element_text(size = 11, family = "Arial"),
+    legend.position = "right",
+    panel.background = element_rect(fill = "transparent"),
+    axis.line = element_line(colour = "black"),
+    legend.key = element_rect(fill = "transparent"),
+    axis.text = element_text(size = 8)
+  )  +
+  theme(legend.key.size = unit(0.7, "cm")) +
+  stat_ellipse(
+    geom = "polygon",
+    aes(PC4,
+        PC5,
+        group = Genotype,
+        color = Genotype,
+        fill = Genotype),
+    type = "norm",
+    alpha = 0.10
+  ) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) +
+  scale_fill_manual(name = "Genotype",
+                    values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  scale_shape_manual(name = "Study", 
+                     values = c(16,17,15), 
+                     labels = c("Young et al (2020)", "Young et al (2023)", "Young et al (2024)"))
+```
+
+```{r Principal component plots, echo = F, fig.width=8, fig.height=3}
+ggplot(pca12,
+       aes(x = PC1, y = 0, color = Genotype, shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point() + 
+  geom_jitter(width = 0) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) + 
+  # xlim(c(-10, 10)) +
+  xlab("PC1 - 13%")
+  
+ggplot(pca12,
+       aes(x = PC2, y = 0, color = Genotype, shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point() + 
+  geom_jitter(width = 0) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  # xlim(c(-7, 7)) + 
+  xlab("PC2 - ")
+
+ggplot(pca23,
+       aes(x = PC3, y = 0, color = Genotype, shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point() + 
+  geom_jitter(width = 0, 
+              height = 0.5) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  # xlim(c(-5, 5)) + 
+  xlab("PC3 - ")
+
+## PC 4
+ggplot(pca34,
+       aes(x = PC4, y = 0, color = Genotype, shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point() + 
+  geom_jitter(width = 0, 
+              height = 0.5) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  # xlim(c(-5, 5)) + 
+  xlab("PC4 - ")
+```
+
+
+## 6. DAPC Analysis
+### 6.1 - Running DAPC
+
+```{r loading adegenet package, include = F, echo = F}
+library(adegenet)
+```
+
+So using the `vsdstudy` (i.e. has the study variance removed).
+
+```{r prepping for the dapc analysis, include = F, echo = F}
+assay(vsdstudy) %>% 
+  t() %>% 
+  as.data.frame() -> vsd_dapc
+
+## checking to make sure everything in correct order
+all(rownames(vsd_dapc) == rownames(megatfall_genets_filt))
+
+genet <- as.factor(megatfall_genets_filt$Genotype)
+```
+
+```{r choosing best number of pc axes to retain}
+# set.seed(123)  # for reproducibility
+# xval <- xvalDapc(
+#   vsd_dapc,
+#   genet,
+#   n.pca.max = 50,
+#   training.set = 0.9,
+#   result = "groupMean",
+#   center = TRUE,
+#   scale = FALSE
+# )
+# xval$`Number of PCs Achieving Highest Mean Success`
+```
+
+Thus, keep 20 PCs. 
+
+```{r running the dapc, echo = F}
+dapc_res = dapc(vsd_dapc,
+                genet,
+                n.pca = 20,
+                n.da = nlevels(genet) - 1)
+```
+
+```{r basic visualisation for the dapc results}
+scatter(dapc_res, posi.da="bottomright", bg="white", pch=20,
+        cstar=1, col=rainbow(length(unique(dapc_res$grp))), scree.da=TRUE)
+scatter(dapc_res, xax = 2, yax = 3)
+scatter(dapc_res, xax = 1, yax = 3)
+
+loadingplot(dapc_res$var.contr, threshold=0.003)
+loadingplot(dapc_res$loadings, threshold=0.003)
+compoplot(dapc_res, show.lab = TRUE, 
+          lab = rownames(vsd_dapc),
+          col = rainbow(length(unique(dapc_res$grp))))
+table(Predicted = dapc_res$assign, Actual = genet)
+```
+
+Component Represents For loadings Variables’ weights on discriminant axes Discrimination power of variables
+ind.coord - Individuals' positions in DF space Plotting individual separation (scatter plot) 
+grp.coord - Group centroid positions in DF space Plotting group means 
+pca.loadings - Original PCA loadings of variables Reviewing dimensionality reduction
+var.contr - Variable contributions to DFs Ranking important variables for discrimination
+
+```{r making dataframe for the ggplot visualisation, include=F, echo = F}
+dapc_res$ind.coord %>% 
+  as.data.frame() %>%
+  rownames_to_column(var = "samps") %>% 
+  inner_join(megatfall_genets_filt %>% 
+               rownames_to_column(var = "samps")) %>% 
+  column_to_rownames(var = "samps") %>% 
+  mutate(Study = as.factor(Study)) -> dapc_4_gg
+```
+
+```{r eignevalues of DAPC and variance explained, echo = F}
+dapc_res$eig
+
+# Eigenvalues from DAPC
+eigenvalues <- c(4599.4641, 1503.6745, 410.3274)
+
+# Calculate the total sum of eigenvalues
+total_variance <- sum(eigenvalues)
+
+# Calculate variance explained by each LD axis
+variance_explained <- eigenvalues / total_variance
+
+# Print the results
+variance_explained
+```
+
+
+### 6.2 - DAPC Visualisation
+
+```{r ggplots of dapc LDs, echo = F}
+## getting the centroids
+centroids <- dapc_4_gg %>%
+  group_by(Genotype) %>%
+  summarise(across(starts_with("LD"), mean), .groups = "drop")
+
+## LD1 and LD2
+ggplot(dapc_4_gg, 
+       aes(x = LD1, 
+           y = LD2, 
+           group = Genotype, 
+           color = Genotype, 
+           shape = Study)) + 
+  geom_point() + 
+  stat_ellipse(level = 0.95,
+               type = "norm",
+               linetype = "dashed") + 
+  geom_point(
+    data = centroids,
+    aes(x = LD1, 
+        y = LD2, 
+        fill = Genotype),
+    shape = 21,
+    size = 4,
+    color = "black"
+  ) + 
+  geom_segment(
+    data = centroids,
+    aes(
+      x = 0,
+      y = 0,
+      xend = LD1,
+      yend = LD2
+    ),
+    arrow = arrow(length = unit(0.25, "cm")),
+    color = "black", 
+    inherit.aes = F
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right") +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) +
+  scale_fill_manual(name = "Genotype",
+                    values = c("wheat3", "navy" , "springgreen3", "grey60"))
+
+## LD2 and LD3
+ggplot(dapc_4_gg, 
+       aes(x = LD2, 
+           y = LD3, 
+           group = Genotype, 
+           color = Genotype, 
+           shape = Study)) + 
+  geom_point() + 
+  stat_ellipse(level = 0.95,
+               type = "norm",
+               linetype = "dashed") + 
+  geom_point(
+    data = centroids,
+    aes(x = LD2, 
+        y = LD3, 
+        fill = Genotype),
+    shape = 21,
+    size = 4,
+    color = "black"
+  ) + 
+  geom_segment(
+    data = centroids,
+    aes(
+      x = 0,
+      y = 0,
+      xend = LD2,
+      yend = LD3
+    ),
+    arrow = arrow(length = unit(0.25, "cm")),
+    color = "black", 
+    inherit.aes = F
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right") +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) +
+  scale_fill_manual(name = "Genotype",
+                    values = c("wheat3", "navy" , "springgreen3", "grey60"))
+
+## LD1 and LD3
+ggplot(dapc_4_gg, 
+       aes(x = LD1, 
+           y = LD3, 
+           group = Genotype, 
+           color = Genotype, 
+           shape = Study)) + 
+  geom_point() + 
+  stat_ellipse(level = 0.95,
+               type = "norm",
+               linetype = "dashed") + 
+  geom_point(
+    data = centroids,
+    aes(x = LD1, 
+        y = LD3, 
+        fill = Genotype),
+    shape = 21,
+    size = 4,
+    color = "black"
+  ) + 
+  geom_segment(
+    data = centroids,
+    aes(
+      x = 0,
+      y = 0,
+      xend = LD1,
+      yend = LD3
+    ),
+    arrow = arrow(length = unit(0.25, "cm")),
+    color = "black", 
+    inherit.aes = F
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right") +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) +
+  scale_fill_manual(name = "Genotype",
+                    values = c("wheat3", "navy" , "springgreen3", "grey60"))
+```
+
+```{r Principal component lineplots, echo = F, fig.width=8, fig.height=2.8}
+ggplot(dapc_4_gg,
+       aes(x = LD1, y = 0, color = Genotype, shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point() + 
+  geom_jitter(width = 0) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  scale_shape_manual(name = "Study",
+                     values = c("young2020" = 16, "young2023" = 17, "young2024" = 15),
+                     labels = c("young2020" = "Young et al (2020)", 
+                                "young2023" = "Young et al (2023)", 
+                                "young2024" = "Young et al (2024)")) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) + 
+  xlim(c(-10, 10)) +
+  xlab("LD1: 71% Variance")
+  
+ggplot(dapc_4_gg,
+       aes(x = LD2, y = 0, color = Genotype, shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point() + 
+  geom_jitter(width = 0) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  scale_shape_manual(name = "Study",
+                     values = c("young2020" = 16, "young2023" = 17, "young2024" = 15),
+                     labels = c("young2020" = "Young et al (2020)", 
+                                "young2023" = "Young et al (2023)", 
+                                "young2024" = "Young et al (2024)")) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  xlim(c(-6, 6)) + 
+  xlab("LD2: 23% Variance")
+
+ggplot(dapc_4_gg,
+       aes(x = LD3, y = 0, color = Genotype, shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point(size = 0.1) + 
+  geom_jitter(width = 0, 
+              height = 0.5) +
+  scale_color_manual(name = "Genotype",
+                     values = c("wheat3", "navy" , "springgreen3", "grey60")) + 
+  scale_shape_manual(name = "Study",
+                     values = c("young2020" = 16, "young2023" = 17, "young2024" = 15),
+                     labels = c("young2020" = "Young et al (2020)", 
+                                "young2023" = "Young et al (2023)", 
+                                "young2024" = "Young et al (2024)")) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  xlim(c(-5, 5)) + 
+  xlab("LD3: 6% Variance")
+```
+
+
+### 6.3 - Genet LD Top Genes
+
+```{r making ld objects, include = F}
+dapc_res$var.contr %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "GeneID") %>% 
+  pivot_longer(cols = 2:4, 
+               names_to = "LD", 
+               values_to = "loading") %>% 
+  mutate(abs_loadng = abs(loading)) %>% 
+  group_by(LD) %>% 
+  slice_max(order_by = abs_loadng, 
+            n = 100) %>% 
+  arrange(LD, 
+          desc(abs_loadng)) %>% 
+  ungroup() %>%
+  inner_join(annot_comp_gene, 
+             by = "GeneID") -> ld_loadings_annot
+View(ld_loadings_annot)
+
+top50_LD1 <- filter(ld_loadings_annot, LD == "LD1")
+top50_LD2 <- filter(ld_loadings_annot, LD == "LD2")
+top50_LD3 <- filter(ld_loadings_annot, LD == "LD3")
+```
+
+```{r writing ld genet genes for manuscript, include = F}
+write.csv(ld_loadings_annot, 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/genet_ld_genes.csv")
+```
+
+
+
+### 6.4 - KEGG Enrichment
+
+```{r loading cp, include = F}
+library(clusterProfiler)
+library(enrichplot)
+```
+
+The varaibles say top 50 but it is actually top 100 genes, I being lazy and not changing lolllllll. 
+
+```{r making LD kegg dataframes}
+top50_LD1 %>% 
+  dplyr::select(KEGG_ko, GeneID) %>% 
+  mutate(KEGG_ko = na_if(KEGG_ko, "-"), 
+         KEGG_ko = as.character(KEGG_ko)) %>% 
+  filter(!is.na(KEGG_ko)) %>%
+  mutate(KEGG_ko = str_remove_all(KEGG_ko, "ko:")) %>%
+  separate_rows(KEGG_ko, sep = ",") -> top50_LD1_KEGG
+  
+top50_LD2 %>% 
+  dplyr::select(KEGG_ko, GeneID) %>% 
+  mutate(KEGG_ko = na_if(KEGG_ko, "-"), 
+         KEGG_ko = as.character(KEGG_ko)) %>% 
+  filter(!is.na(KEGG_ko)) %>%
+  mutate(KEGG_ko = str_remove_all(KEGG_ko, "ko:")) %>%
+  separate_rows(KEGG_ko, sep = ",") -> top50_LD2_KEGG
+  
+top50_LD3 %>% 
+  dplyr::select(KEGG_ko, GeneID) %>% 
+  mutate(KEGG_ko = na_if(KEGG_ko, "-"), 
+         KEGG_ko = as.character(KEGG_ko)) %>% 
+  filter(!is.na(KEGG_ko)) %>%
+  mutate(KEGG_ko = str_remove_all(KEGG_ko, "ko:")) %>%
+  separate_rows(KEGG_ko, sep = ",") -> top50_LD3_KEGG
+```
+
+```{r running the KEGG pathway analysis, echo = F}
+enrichKEGG(gene = top50_LD1_KEGG$KEGG_ko, 
+            organism = 'ko', pvalueCutoff = 0.01) -> top50_LD1_KEGG_res
+enrichKEGG(gene = top50_LD2_KEGG$KEGG_ko, 
+            organism = 'ko', pvalueCutoff = 0.01) -> top50_LD2_KEGG_res
+enrichKEGG(gene = top50_LD3_KEGG$KEGG_ko, 
+            organism = 'ko', pvalueCutoff = 0.01) -> top50_LD3_KEGG_res
+
+top50_LD1_KEGG_res
+top50_LD2_KEGG_res
+top50_LD3_KEGG_res
+```
+
+```{r barplots to see number of things, echo = F, fig.height = 12}
+barplot(top50_LD1_KEGG_res, showCategory = 100)
+# barplot(top50_LD2_KEGG_res, showCategory = 100)
+barplot(top50_LD3_KEGG_res, showCategory = 100)
+```
+
+```{r connection plots, echo = F}
+# emapplot(pairwise_termsim(top50_LD1_KEGG_res),
+#          showCategory = 50, 
+#          cex_label_category = 1.2, 
+#          cex_category = 1.2, 
+#          min_edge = 0.2, 
+#          layout = "nicely", 
+#          cex_line = 1)
+# 
+# emapplot(pairwise_termsim(top50_LD2_KEGG_res),
+#          showCategory = 100,
+#          cex_label_category = 1.2,
+#          cex_category = 1.2,
+#          min_edge = 0.2,
+#          layout = "nicely",
+#          cex_line = 1)
+# 
+# emapplot(pairwise_termsim(top50_LD3_KEGG_res), 
+#          showCategory = 100, 
+#          cex_label_category = 1.2, 
+#          cex_category = 1.2, 
+#          min_edge = 0.2, 
+#          layout = "nicely", 
+#          cex_line = 1)
+```
+
+```{r writing genet kegg dapc res to csv, include = F}
+write.csv(top50_LD1_KEGG_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/genet_ld1_kegg_res.csv")
+write.csv(top50_LD2_KEGG_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/genet_ld2_kegg_res.csv")
+write.csv(top50_LD3_KEGG_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/genet_ld3_kegg_res.csv")
+```
+
+
+### 6.5 - GO Enrichment
+
+```{r loading go database package, include = F}
+library(GO.db)
+```
+
+So I am going to move away from Cytoscape for GO visulaisation and use `enricher` which is in `clusterprofiler`. 
+
+```{r making gene universe, include = F}
+annot_comp_gene %>% 
+  dplyr::select(GeneID, GOs) %>% 
+  mutate(GOs = na_if(GOs, "-"), 
+         GOs = as.character(GOs)) %>% 
+  dplyr::filter(!is.na(GOs)) %>% 
+  separate_rows(GOs, sep = ",") %>%
+  dplyr::filter(GeneID %in% rownames(cpmgenet)) %>% 
+  dplyr::select(2,1) -> go_universe
+```
+
+```{r making the term 2 name file, include = F}
+go_ids <- unique(go_universe$GOs)
+valid_ids <- go_ids[go_ids %in% keys(GO.db)]
+data.frame(
+  go_id = valid_ids,
+  name = Term(GOTERM[valid_ids]),
+  aspect = Ontology(GOTERM[valid_ids])
+) %>% 
+  mutate(name = paste0(aspect,": ", name)) %>%
+  rownames_to_column(var = "remove") %>% 
+  dplyr::select(-remove, -aspect) -> go2names
+# View(go2names)
+```
+
+Again, it is top 100 genes not top 50, being lazy and not changing the variable. 
+
+```{r getting LD top 100 genes for analysis}
+ld1_genes <- top50_LD1$GeneID
+ld2_genes <- top50_LD2$GeneID
+ld3_genes <- top50_LD3$GeneID
+```
+
+```{r running fo enrichment on LDs}
+go_ld1_res <- enricher(gene = ld1_genes,
+                       TERM2GENE = go_universe,
+                       TERM2NAME = go2names,
+                       pAdjustMethod = "BH")
+go_ld2_res <- enricher(gene = ld2_genes,
+                       TERM2GENE = go_universe,
+                       TERM2NAME = go2names,
+                       pAdjustMethod = "BH")
+go_ld3_res <- enricher(gene = ld3_genes,
+                       TERM2GENE = go_universe,
+                       TERM2NAME = go2names,
+                       pAdjustMethod = "BH")
+```
+
+```{r go results}
+# go_ld1_res %>% as.data.frame() %>% View()
+# go_ld2_res %>% as.data.frame() %>% View()
+# go_ld3_res %>% as.data.frame() %>% View()
+```
+
+```{r writing genet DAPC go res, include = F}
+write.csv(go_ld1_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/genet_ld1_go_res.csv")
+write.csv(go_ld2_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/genet_ld2_go_res.csv")
+write.csv(go_ld3_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/genet_ld3_go_res.csv")
+```
+
+
+
+## 7. Health DAPC Analysis
+### 7.1 - Running Health DAPC
+
+So using the `vsdstudy` (i.e. has the study variance removed).
+
+```{r prepping for the dapc analysis, include = F, echo = F}
+assay(vsdstudy) %>% 
+  t() %>% 
+  as.data.frame() -> vsd_dapc
+
+## checking to make sure everything in correct order
+all(rownames(vsd_dapc) == rownames(megatfall_genets_filt))
+
+health <- as.factor(megatfall_genets_filt$health_location)
+
+megatfall_genets_filt %>% 
+  group_by(health_location) %>% 
+  summarise(count = n())
+```
+
+```{r choosing best number of pc axes to retain}
+# set.seed(123)  # for reproducibility
+# xval_h <- xvalDapc(
+#   vsd_dapc,
+#   health,
+#   n.pca.max = 50,
+#   training.set = 0.9,
+#   result = "groupMean",
+#   center = TRUE,
+#   scale = FALSE
+# )
+# xval_h$`Number of PCs Achieving Highest Mean Success`
+```
+
+Thus, keep 45 PCs
+
+```{r running the dapc, echo = F}
+dapc_h_res = dapc(vsd_dapc,
+                health,
+                n.pca = 45,
+                n.da = nlevels(health) - 1)
+```
+
+```{r basic visualisation for the dapc results}
+scatter(dapc_h_res, 
+        posi.da="bottomright", 
+        bg="white", 
+        pch=20,
+        cstar=1, 
+        col=rainbow(length(unique(dapc_h_res$grp))), 
+        scree.da=TRUE)
+scatter(dapc_h_res, xax = 1, yax = 3)
+scatter(dapc_h_res, xax = 2, yax = 3)
+loadingplot(dapc_h_res$var.contr, threshold=0.003)
+loadingplot(dapc_h_res$loadings, threshold=0.003)
+compoplot(dapc_h_res, show.lab = TRUE, 
+          lab = rownames(vsd_dapc),
+          col = rainbow(length(unique(dapc_h_res$grp))))
+table(Predicted = dapc_h_res$assign, Actual = health)
+```
+
+```{r making dataframe for the ggplot visualisation, include=F, echo = F}
+dapc_h_res$ind.coord %>% 
+  as.data.frame() %>%
+  rownames_to_column(var = "samps") %>% 
+  inner_join(megatfall_genets_filt %>% 
+               rownames_to_column(var = "samps")) %>% 
+  column_to_rownames(var = "samps") %>% 
+  mutate(Study = as.factor(Study)) -> dapc_4_gg
+```
+
+```{r eignevalues of DAPC and variance explained, echo = F}
+dapc_h_res$eig
+
+# Eigenvalues from DAPC
+eigenvalues <- c(933.265241, 428.075587, 3.254937)
+
+# Calculate the total sum of eigenvalues
+total_variance <- sum(eigenvalues)
+
+# Calculate variance explained by each LD axis
+variance_explained <- eigenvalues / total_variance
+
+# Print the results
+variance_explained
+```
+
+
+### 7.2 - DAPC Health Visualisation
+
+```{r ggplots of dapc LDs, echo = F}
+dapc_4_gg %>% 
+  mutate(health_location = factor(health_location, 
+                                     levels = c("lab_seawater", 
+                                             "field_seawater", 
+                                             "visually_healthy", 
+                                            "diseased"))) -> dapc_4_gg
+
+## getting the centroids
+centroids <- dapc_4_gg %>%
+  group_by(health_location) %>%
+  summarise(across(starts_with("LD"), mean), .groups = "drop")
+
+
+
+## LD1 and LD2
+ggplot(dapc_4_gg, 
+       aes(x = LD1, 
+           y = LD2, 
+           group = health_location, 
+           color = health_location, 
+           shape = Study)) + 
+  geom_point() + 
+  stat_ellipse(level = 0.95,
+               type = "norm",
+               linetype = "dashed") + 
+  geom_point(
+    data = centroids,
+    aes(x = LD1, 
+        y = LD2, 
+        fill = health_location),
+    shape = 21,
+    size = 4,
+    color = "black"
+  ) + 
+  geom_segment(
+    data = centroids,
+    aes(
+      x = 0,
+      y = 0,
+      xend = LD1,
+      yend = LD2
+    ),
+    arrow = arrow(length = unit(0.25, "cm")),
+    color = "black", 
+    inherit.aes = F
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right") +
+  scale_color_manual(name = "Health",
+                     values = c("lightblue", "dodgerblue3","darkgoldenrod2", "orangered3")) +
+  scale_fill_manual(name = "Health",
+                    values = c("lightblue", "dodgerblue3","darkgoldenrod2", "orangered3"))
+
+## LD2 nd LD3
+ggplot(dapc_4_gg, 
+       aes(x = LD2, 
+           y = LD3, 
+           group = health_location, 
+           color = health_location, 
+           shape = Study)) + 
+  geom_point() + 
+  stat_ellipse(level = 0.95,
+               type = "norm",
+               linetype = "dashed") + 
+  geom_point(
+    data = centroids,
+    aes(x = LD2, 
+        y = LD3, 
+        fill = health_location),
+    shape = 21,
+    size = 4,
+    color = "black"
+  ) + 
+  geom_segment(
+    data = centroids,
+    aes(
+      x = 0,
+      y = 0,
+      xend = LD2,
+      yend = LD3
+    ),
+    arrow = arrow(length = unit(0.25, "cm")),
+    color = "black", 
+    inherit.aes = F
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right") +
+  scale_color_manual(name = "Health",
+                     values = c("lightblue", "dodgerblue3","darkgoldenrod2", "orangered3")) +
+  scale_fill_manual(name = "Health",
+                    values = c("lightblue", "dodgerblue3","darkgoldenrod2", "orangered3"))
+
+## LD1 and LD3
+ggplot(dapc_4_gg, 
+       aes(x = LD1, 
+           y = LD3, 
+           group = health_location, 
+           color = health_location, 
+           shape = Study)) + 
+  geom_point() + 
+  stat_ellipse(level = 0.95,
+               type = "norm",
+               linetype = "dashed") + 
+  geom_point(
+    data = centroids,
+    aes(x = LD1, 
+        y = LD3, 
+        fill = health_location),
+    shape = 21,
+    size = 4,
+    color = "black"
+  ) + 
+  geom_segment(
+    data = centroids,
+    aes(
+      x = 0,
+      y = 0,
+      xend = LD1,
+      yend = LD3
+    ),
+    arrow = arrow(length = unit(0.25, "cm")),
+    color = "black", 
+    inherit.aes = F
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right") +
+  scale_color_manual(name = "Health",
+                     values = c("lightblue", "dodgerblue3","darkgoldenrod2", "orangered3")) +
+  scale_fill_manual(name = "Health",
+                    values = c("lightblue", "dodgerblue3","darkgoldenrod2", "orangered3"))
+```
+
+```{r Principal component lineplots, echo = F, fig.width=8, fig.height=2.8}
+ggplot(dapc_4_gg,
+       aes(x = LD1, y = 0, 
+           color = health_location, 
+           shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point() + 
+  geom_jitter(width = 0) +
+  scale_color_manual(name = "Health",
+                     values = c("lightblue", "dodgerblue3","darkgoldenrod2", "orangered3"), 
+                     labels = c("lab_seawater" = "Lab Seawater", 
+                                "field_seawater" = "Field Seawater", 
+                                "visually_healthy" = "Visually Healthy", 
+                                "diseased" = "Diseased")) + 
+  scale_shape_manual(name = "Study",
+                     values = c("young2020" = 16, "young2023" = 17, "young2024" = 15),
+                     labels = c("young2020" = "Young et al (2020)", 
+                                "young2023" = "Young et al (2023)", 
+                                "young2024" = "Young et al (2024)")) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) + 
+  xlim(c(-9, 9)) +
+  xlab("LD1:68% Variance")
+  
+ggplot(dapc_4_gg,
+       aes(x = LD2, y = 0, 
+           color = health_location, 
+           shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point() + 
+  geom_jitter(width = 0) +
+  scale_color_manual(name = "Health",
+                     values = c("lightblue", "dodgerblue3","darkgoldenrod2", "orangered3")) + 
+  scale_shape_manual(name = "Study",
+                     values = c("young2020" = 16, "young2023" = 17, "young2024" = 15),
+                     labels = c("young2020" = "Young et al (2020)", 
+                                "young2023" = "Young et al (2023)", 
+                                "young2024" = "Young et al (2024)")) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  xlim(c(-9, 9)) + 
+  xlab("LD2: 31% Variance")
+
+ggplot(dapc_4_gg,
+       aes(x = LD3, y = 0, 
+           color = health_location, 
+           shape = Study)) +
+  geom_hline(yintercept = 0, 
+             alpha = 0.4) + 
+  geom_vline(xintercept = 0, 
+             alpha = 0.4) +
+  geom_point() + 
+  geom_jitter(width = 0) +
+  scale_color_manual(name = "Health",
+                     values = c("lightblue", "dodgerblue3","darkgoldenrod2", "orangered3")) + 
+  scale_shape_manual(name = "Study",
+                     values = c("young2020" = 16, "young2023" = 17, "young2024" = 15),
+                     labels = c("young2020" = "Young et al (2020)", 
+                                "young2023" = "Young et al (2023)", 
+                                "young2024" = "Young et al (2024)")) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+#        panel.border = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  xlim(c(-9, 9)) + 
+  xlab("LD3: 2% Variance")
+```
+
+
+### 7.3 - Health LD Top Genes
+
+```{r extracting loadings}
+# dapc_res$var.contr %>% View()
+```
+
+```{r getting top genes in LDs, echo = F}
+dapc_h_res$var.contr %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "GeneID") %>% 
+  pivot_longer(cols = 2:4, 
+               names_to = "LD", 
+               values_to = "loading") %>% 
+  mutate(abs_loadng = abs(loading)) %>% 
+  group_by(LD) %>% 
+  slice_max(order_by = abs_loadng, 
+            n = 100) %>% 
+  arrange(LD, 
+          desc(abs_loadng)) %>% 
+  ungroup() %>%
+  inner_join(annot_comp_gene, 
+             by = "GeneID") -> ld_loadings_annot
+
+top50_LD1 <- filter(ld_loadings_annot, LD == "LD1")
+top50_LD2 <- filter(ld_loadings_annot, LD == "LD2")
+top50_LD3 <- filter(ld_loadings_annot, LD == "LD3")
+```
+
+```{r writing health LD genes, include = F}
+write.csv(ld_loadings_annot, 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/health_LD_genes.csv")
+```
+
+
+
+### 7.4 - Health KEGG Analysis
+
+```{r loading cp, include = F}
+library(clusterProfiler)
+library(enrichplot)
+```
+
+```{r making LD kegg dataframes}
+top50_LD1 %>% 
+  dplyr::select(KEGG_ko, GeneID) %>% 
+  mutate(KEGG_ko = na_if(KEGG_ko, "-"), 
+         KEGG_ko = as.character(KEGG_ko)) %>% 
+  filter(!is.na(KEGG_ko)) %>%
+  mutate(KEGG_ko = str_remove_all(KEGG_ko, "ko:")) %>%
+  separate_rows(KEGG_ko, sep = ",") -> top50_LD1_KEGG
+  
+top50_LD2 %>% 
+  dplyr::select(KEGG_ko, GeneID) %>% 
+  mutate(KEGG_ko = na_if(KEGG_ko, "-"), 
+         KEGG_ko = as.character(KEGG_ko)) %>% 
+  filter(!is.na(KEGG_ko)) %>%
+  mutate(KEGG_ko = str_remove_all(KEGG_ko, "ko:")) %>%
+  separate_rows(KEGG_ko, sep = ",") -> top50_LD2_KEGG
+  
+top50_LD3 %>% 
+  dplyr::select(KEGG_ko, GeneID) %>% 
+  mutate(KEGG_ko = na_if(KEGG_ko, "-"), 
+         KEGG_ko = as.character(KEGG_ko)) %>% 
+  filter(!is.na(KEGG_ko)) %>%
+  mutate(KEGG_ko = str_remove_all(KEGG_ko, "ko:")) %>%
+  separate_rows(KEGG_ko, sep = ",") -> top50_LD3_KEGG
+```
+
+```{r running the KEGG pathway analysis, echo = F}
+enrichKEGG(gene = top50_LD1_KEGG$KEGG_ko, 
+            organism = 'ko', pvalueCutoff = 0.01) -> top50_LD1_KEGG_res
+enrichKEGG(gene = top50_LD2_KEGG$KEGG_ko, 
+            organism = 'ko', pvalueCutoff = 0.01) -> top50_LD2_KEGG_res
+enrichKEGG(gene = top50_LD3_KEGG$KEGG_ko, 
+            organism = 'ko', pvalueCutoff = 0.01) -> top50_LD3_KEGG_res
+
+top50_LD1_KEGG_res
+top50_LD2_KEGG_res
+top50_LD3_KEGG_res
+```
+
+```{r barplots to see number of things, echo = F, fig.height = 12}
+barplot(top50_LD1_KEGG_res, showCategory = 100)
+barplot(top50_LD2_KEGG_res, showCategory = 100)
+barplot(top50_LD3_KEGG_res, showCategory = 100)
+```
+
+```{r connection plots, echo = F}
+# emapplot(pairwise_termsim(top50_LD1_KEGG_res),
+#          showCategory = 50, 
+#          cex_label_category = 1.2, 
+#          cex_category = 1.2, 
+#          min_edge = 0.2, 
+#          layout = "nicely", 
+#          cex_line = 1)
+# 
+# emapplot(pairwise_termsim(top50_LD2_KEGG_res),
+#          showCategory = 100,
+#          cex_label_category = 1.2,
+#          cex_category = 1.2,
+#          min_edge = 0.2,
+#          layout = "nicely",
+#          cex_line = 1)
+# 
+# emapplot(pairwise_termsim(top50_LD3_KEGG_res), 
+#          showCategory = 100, 
+#          cex_label_category = 1.2, 
+#          cex_category = 1.2, 
+#          min_edge = 0.2, 
+#          layout = "nicely", 
+#          cex_line = 1)
+```
+
+```{r writing genet kegg dapc res to csv, include = F}
+write.csv(top50_LD1_KEGG_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/health_ld1_kegg_res.csv")
+write.csv(top50_LD2_KEGG_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/health_ld2_kegg_res.csv")
+write.csv(top50_LD3_KEGG_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/health_ld3_kegg_res.csv")
+```
+
+
+### 7.5 - Health GO Analysis
+
+```{r loading go database package, include = F}
+library(GO.db)
+```
+
+So I am going to move away from Cytoscape for GO visualization and use `enricher` which is in `clusterprofiler`. 
+
+```{r making gene universe, include = F}
+annot_comp_gene %>% 
+  dplyr::select(GeneID, GOs) %>% 
+  mutate(GOs = na_if(GOs, "-"), 
+         GOs = as.character(GOs)) %>% 
+  dplyr::filter(!is.na(GOs)) %>% 
+  separate_rows(GOs, sep = ",") %>%
+  dplyr::filter(GeneID %in% rownames(cpmgenet)) %>% 
+  dplyr::select(2,1) -> go_universe
+```
+
+```{r making the term 2 name file, include = F}
+go_ids <- unique(go_universe$GOs)
+valid_ids <- go_ids[go_ids %in% keys(GO.db)]
+data.frame(
+  go_id = valid_ids,
+  name = Term(GOTERM[valid_ids]),
+  aspect = Ontology(GOTERM[valid_ids])
+) %>% 
+  mutate(name = paste0(aspect,": ", name)) %>%
+  rownames_to_column(var = "remove") %>% 
+  dplyr::select(-remove, -aspect) -> go2names
+# View(go2names)
+```
+
+```{r getting LD top 100 genes for analysis}
+ld1_genes <- top50_LD1$GeneID
+ld2_genes <- top50_LD2$GeneID
+ld3_genes <- top50_LD3$GeneID
+```
+
+```{r running fo enrichment on LDs}
+go_ld1_res <- enricher(gene = ld1_genes,
+                       TERM2GENE = go_universe,
+                       TERM2NAME = go2names,
+                       pAdjustMethod = "BH")
+go_ld2_res <- enricher(gene = ld2_genes,
+                       TERM2GENE = go_universe,
+                       TERM2NAME = go2names,
+                       pAdjustMethod = "BH")
+go_ld3_res <- enricher(gene = ld3_genes,
+                       TERM2GENE = go_universe,
+                       TERM2NAME = go2names,
+                       pAdjustMethod = "BH")
+```
+
+```{r go results}
+# go_ld1_res %>% as.data.frame() %>% View()
+# go_ld2_res %>% as.data.frame() %>% View()
+# go_ld3_res %>% as.data.frame() %>% View()
+```
+
+```{r writing genet DAPC go res, include = F}
+write.csv(go_ld1_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/health_ld1_go_res.csv")
+write.csv(go_ld2_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/health_ld2_go_res.csv")
+write.csv(go_ld3_res %>% 
+            as.data.frame(), 
+          file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/health_ld3_go_res.csv")
+```
+
+
+## 8. WGCNA Analysis
+### 8.1 - WGCNA Pipeline
+
+```{r SUPER DUPER IMPORTANT FOR WGCNA TO DO THIS, include = F}
+options(stringsAsFactors = FALSE)
+```
+
+```{r making alltraits object for WGCNA, echo = F}
+megatfall_genets_filt %>% 
+  rownames_to_column(var = "samps") %>%
+  dplyr::select(samps, Genotype, health_location) %>%
+  column_to_rownames(var = "samps") -> WGCNA_treat_cato
+# View(WGCNA_treat_cato)
+
+model.matrix(~Genotype-1, WGCNA_treat_cato) %>% 
+  as.data.frame() %>%
+  rownames_to_column(var = "Sample_numbers") %>% 
+  full_join(model.matrix(~health_location-1, WGCNA_treat_cato) %>% 
+              as.data.frame() %>% 
+              rownames_to_column(var = "Sample_numbers")) %>% 
+  column_to_rownames(var = "Sample_numbers") -> allTraits
+# View(allTraits)
+```
+
+```{r VST with limma removing genet variance, include = F}
+ddsall <- DESeqDataSetFromMatrix(countData = cpmgenet, 
+                                 colData = megatfall_genets_filt, 
+                                 design = ~ Study + Genotype)
+
+vsdgeno <- vst(ddsall)
+assay(vsdgeno) <- limma::removeBatchEffect(assay(vsdgeno), 
+                                           batch = vsdgeno$Environment, 
+                                           batch2 = vsdgeno$seq_tech)
+```
+
+```{r Genes for WGCNA and checking they all a-okay, echo = F}
+genes4wgcna <- assay(vsdgeno)
+genes4wgcna <- t(genes4wgcna)
+genes4wgcna <- as.data.frame(genes4wgcna)
+nrow(genes4wgcna)
+dim(genes4wgcna)
+
+gsg = goodSamplesGenes(genes4wgcna, verbose = 3)
+gsg$allOK
+```
+
+```{r}
+all(rownames(genes4wgcna) == rownames(allTraits))
+```
+
+Everything is all good re samples and gene counts for WGCNA, yay.
+
+```{r Checking for outliers, fig.height=10, fig.width=14, echo = F}
+sampleTree = hclust(dist(genes4wgcna), method = "ward.D2");
+
+sizeGrWindow(12,9)
+par(cex = 1);
+par(mar = c(0,4,2,0))
+plot(sampleTree, 
+     main = "Sample clustering to detect outliers", 
+     sub="", 
+     xlab="", 
+     cex.lab = 1.5,
+cex.axis = 1.5, cex.main = 2)
+abline(h = 500, col = "red");
+clust = cutreeStatic(sampleTree, cutHeight = 800, minSize = 10)
+table(clust)
+```
+
+```{r removal of the outlier samples}
+# clust 1 contains the samples we want to keep.
+keepSamples = (clust==1)
+datExpr = genes4wgcna[keepSamples, ]
+nGenes = ncol(datExpr)
+nSamples = nrow(datExpr)
+```
+
+```{r checking wgcna object and allTraits march up, echo = F}
+head(allTraits)
+str(allTraits)
+# View(allTraits)
+# rownames(allTraits) = allTraits$Sample_numbers
+# allTraits$Sample_numbers = NULL
+table(rownames(allTraits)==rownames(genes4wgcna)) #should return TRUE if datasets align correctly, otherwise your names are out of order
+```
+
+```{r Identyfying Soft Power, echo = F}
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(
+  datExpr,
+  powerVector = powers,
+  verbose = 5,
+  dataIsExpr = T,
+  networkType = "signed"
+)
+# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.85,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+```{r Signed adjacency matrix using soft power from last step, include = F}
+softPower = 7;
+adjacency = adjacency(datExpr, 
+                      type="signed", 
+                      power = softPower);
+```
+
+```{r Generation of topological overlap, efcho = F}
+# Turn adjacency into topological overlap
+TOM = TOMsimilarity(adjacency, 
+                    TOMType = "signed");
+dissTOM = 1-TOM
+```
+
+```{r Gene clustering with TOM-based dissimilarity plot, echo = F}
+# Call the hierarchical clustering function
+geneTree = hclust(as.dist(dissTOM), 
+                  method = "average");
+# Plot the resulting clustering tree (dendrogram)
+sizeGrWindow(12,9)
+plot(geneTree, 
+     xlab="", 
+     sub="", 
+     main = "Gene clustering on TOM-based dissimilarity",
+labels = FALSE, hang = 0.04);
+```
+
+```{r Module identification, echo = F}
+# We like large modules, so we set the minimum module size relatively high:
+minModuleSize = 30;
+# Module identification using dynamic tree cut:
+dynamicMods = cutreeDynamic(dendro = geneTree, 
+                            distM = dissTOM,
+                            deepSplit = 2,
+                            pamRespectsDendro = FALSE, 
+                            minClusterSize = minModuleSize);
+table(dynamicMods)
+```
+
+```{r Gene dendogram and module colours plot, echo = F, fig.width=12}
+# Convert numeric lables into colors
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+# Plot the dendrogram and colors underneath
+sizeGrWindow(8,6)
+plotDendroAndColors(geneTree, 
+                    dynamicColors, 
+                    "Dynamic Tree Cut", 
+                    dendroLabels = FALSE, 
+                    hang = 0.03,
+                    addGuide = TRUE, 
+                    guideHang = 0.05, 
+                    main = "Gene dendrogram and module colors")
+```
+
+```{r Merging similar modules, fig.height=6, fig.width=10, echo = F}
+# Calculate eigengenes
+MEList = moduleEigengenes(datExpr, 
+                          colors = dynamicColors)
+MEs = MEList$eigengenes
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs);
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), 
+                method = "average");
+# Plot the result
+sizeGrWindow(7, 6)
+
+plot(METree, 
+     main = "Clustering of module eigengenes",
+     xlab = "", 
+     sub = "")
+MEDissThres = 0.25
+# Plot the cut line into the dendrogram
+abline(h=MEDissThres, col = "red")
+# Call an automatic merging function
+merge = mergeCloseModules(datExpr, 
+                          dynamicColors, 
+                          cutHeight = MEDissThres, 
+                          verbose = 3)
+# The merged module colors
+mergedColors = merge$colors;
+# Eigengenes of the new merged modules:
+mergedMEs = merge$newMEs;
+```
+
+```{r Cluster dendogram with original and merged modules, fig.height=3, fig.width=10, echo = F}
+sizeGrWindow(12, 5)
+#pdf(file = "Plots/geneDendro-3.pdf", wi = 9, he = 6)
+plotDendroAndColors(geneTree, 
+                    cbind(dynamicColors, 
+                          mergedColors), 
+                    c("Dynamic Tree Cut", "Merged dynamic"), 
+                    dendroLabels = FALSE, 
+                    hang = 0.03, 
+                    addGuide = TRUE, 
+                    guideHang = 0.05)
+#dev.off()
+```
+
+```{r Eigengenes for each sample to each module, echo = F}
+# Rename to moduleColors
+moduleColors = mergedColors
+# Construct numerical labels corresponding to the colors
+colorOrder = c("grey", 
+               standardColors(50));
+moduleLabels = match(moduleColors, 
+                     colorOrder)-1
+MEs = mergedMEs
+MEs
+```
+
+```{r module correlation and significance to correaltions, echo = F}
+# Define numbers of genes and samples
+nGenes = ncol(datExpr);
+nSamples = nrow(datExpr);
+# Recalculate MEs with color labels
+MEs0 = moduleEigengenes(datExpr, 
+                        moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, 
+                     allTraits, 
+                     use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, 
+                                     nSamples);
+```
+
+
+### 8.2 - WGCNA Visualisation
+
+```{r wgcna generic heatmap plot, echo = F}
+sizeGrWindow(10,6)
+# Will display correlations and their p-values
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3));
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = moduleTraitCor,
+xLabels = names(allTraits),
+yLabels = names(MEs),
+ySymbols = names(MEs),
+colorLabels = FALSE,
+colors = blueWhiteRed(50),
+textMatrix = textMatrix,
+setStdMargins = FALSE,
+cex.text = 0.5,
+zlim = c(-1,1),
+cex.lab = 0.5,
+main = paste("Module-trait relationships"))
+```
+
+### 8.3 - Tophub Genes
+
+```{r Hub genes for modules, echo = F}
+tophub <- chooseTopHubInEachModule(genes4wgcna,
+                                   moduleColors,
+                                   omitColors = "grey",
+                                   power = 10)
+
+tophub %>% 
+  as.data.frame() %>% 
+  dplyr::rename("GeneID" = 1) %>% 
+  rownames_to_column(var = "Module_colour") %>% 
+  inner_join(annot_comp_gene, 
+             by = "GeneID") -> tophub_annotated
+View(tophub_annotated)
+# write.csv(tophub_annotated, 
+#           file = "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/tophub.csv")
+```
+
+```{r apply function to save wgcna megaframe and write all results to csv files, include = F}
+mod_list <- tophub_annotated$Module_colour
+
+mod_fun <- function(e) {names(genes4wgcna)[moduleColors == e] %>%
+  as.data.frame() %>% 
+  rename(GeneID = 1) %>% 
+  inner_join(annot_comp_gene, 
+             by = "GeneID") %>% 
+    mutate(module = e) -> f
+write.csv(f, file = paste0("/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/", e, ".csv"))
+  f
+}
+  
+plyr::ldply(mod_list, 
+            mod_fun) -> wgcna_megaframe
+View(wgcna_megaframe)
+```
+
+```{r making dataframe for each module}
+mod_fun <- function(e) {
+  names(genes4wgcna)[moduleColors == e] %>%
+    as.data.frame() %>%
+    rename(GeneID = 1) %>%
+    inner_join(annot_comp_gene, by = "GeneID") %>%
+    mutate(module = e)
+}
+
+# Loop through mod_list and assign each module dataframe to a variable in the global environment:
+for (e in mod_list) {
+  df <- mod_fun(e)
+  assign(e, df, envir = .GlobalEnv)
+}
+```
+
+```{r number of genes in modules}
+wgcna_megaframe %>% 
+  group_by(module) %>% 
+  summarise(count = n())
+```
+
+
+`do.call` = runs a function which runs a function for every iteration of the output.
+
+`do.call("rbind", .)` use `ldply` to make a dataframe
+
+```{r genes in modules, echo = F}
+wgcna_megaframe %>% 
+  group_by(module) %>% 
+  summarise(count = n())
+```
+
+
+### 8.4 - Kegg Enrichment of WGCNA Modules
+
+```{r correcting kegg columns for analysis, include = F}
+wgcna_megaframe %>% 
+  dplyr::select(KEGG_ko, GeneID, module) %>%
+  mutate(KEGG_ko = na_if(KEGG_ko, "-"), 
+         KEGG_ko = as.character(KEGG_ko)) %>%
+  filter(!is.na(KEGG_ko)) %>% 
+  mutate(KEGG_ko = str_remove_all(KEGG_ko, "ko:")) %>%
+  separate_rows(KEGG_ko, sep = ",") -> wgcna_kegg
+# View(wgcna_kegg)
+```
+
+```{r running kegg making dataframes and writing to csv, include = F}
+mod_list <- tophub_annotated$Module_colour
+
+kegg_fun <- function(e) {
+  mods <- wgcna_kegg %>% 
+    dplyr::filter(module %in% e)
+  enrichKEGG(
+    gene = mods$KEGG_ko,
+    organism = 'ko',
+    pvalueCutoff = 0.01
+  ) %>%
+    as.data.frame() %>% 
+    mutate(module = e) -> kegg
+  write.csv(kegg, file = paste0("/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/kegg_res_", e, ".csv"))
+  kegg
+}
+  
+plyr::ldply(mod_list, 
+            kegg_fun) -> kegg_res_megaframe
+
+# View(kegg_res_megaframe)
+kegg_res_megaframe %>% 
+  group_by(module) %>% summarise(count = n())
+```
+
+We get enrichment of 13 of the 14 modules, the one that has none is 
+- `royalblue`
+
+```{r making dataframes and writing to csvs, include = F}
+# View(kegg_res_megaframe)
+kegg_res_megaframe %>%
+  group_by(module) %>% 
+  summarise() %>% 
+  ungroup() %>% 
+  column_to_rownames(var = "module") %>% 
+  rownames() -> keggmods
+
+kegggenefun <- function(e) {
+  kegg_res_megaframe %>%
+    dplyr::filter(module %in% e) %>%
+    separate_rows(geneID, sep = '\\/', convert = T) %>%
+    dplyr::rename(., pvalue_KEGG = pvalue) %>%
+    inner_join(
+      wgcna_megaframe %>% 
+        dplyr::filter(module %in% e) %>% 
+        dplyr::select(-module) %>%
+        mutate(
+          KEGG_ko = na_if(KEGG_ko, "-"),
+          KEGG_ko = as.character(KEGG_ko)
+        ) %>%
+          filter(!is.na(KEGG_ko)) %>% 
+        mutate(KEGG_ko = str_remove_all(KEGG_ko, "ko:")) %>%
+        separate_rows(KEGG_ko, sep = ","),
+      by = c("geneID" = "KEGG_ko")
+    ) -> f
+  write.csv(
+    f,
+    file = paste0(
+      "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/kegg_res_genes_",
+      e,
+      ".csv"
+    )
+  )
+  f
+}
+
+plyr::ldply(keggmods, 
+            kegggenefun) -> kegg_res_genes_megaframe
+View(kegg_res_genes_megaframe)
+```
+
+
+### 8.5 - GO Analysis
+
+```{r running go enrichment for all modules}
+mod_list <- tophub_annotated$Module_colour
+
+go_fun <- function(e) {
+  mods <- wgcna_megaframe %>% 
+    dplyr::filter(module %in% e)
+  test <- mods$GeneID
+  enricher(
+    gene = test,
+    TERM2GENE =  go_universe,
+    TERM2NAME = go2names,
+    pAdjustMethod = "BH",
+    pvalueCutoff = 0.01
+  ) %>%
+    as.data.frame() %>% 
+    mutate(module = e) -> kegg
+  write.csv(kegg, file = paste0("/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/go_res_", e, ".csv"))
+  kegg
+}
+  
+plyr::ldply(mod_list, 
+            go_fun) -> go_res_megaframe
+
+# View(kegg_res_megaframe)
+go_res_megaframe %>% 
+  group_by(module) %>% summarise(count = n())
+```
+
+```{r getting the genes linked to the go terms, include = F}
+# View(kegg_res_megaframe)
+kegg_res_megaframe %>%
+  group_by(module) %>% 
+  summarise() %>% 
+  ungroup() %>% 
+  column_to_rownames(var = "module") %>% 
+  rownames() -> gomods
+
+gogenefun <- function(e) {
+  go_res_megaframe %>% 
+    dplyr::filter(module %in% e) %>% 
+    separate_rows(geneID, sep = '\\/', convert = T) %>% 
+    mutate(geneID = as.character(geneID)) %>%
+    inner_join(
+      wgcna_megaframe %>% 
+        dplyr::filter(module %in% e),
+      by = c("geneID" = "GeneID")) -> f
+  write.csv(
+    f,
+    file = paste0(
+      "/Users/benyoung/Library/CloudStorage/OneDrive-UCB-O365/projects/apal_genet_analysis/r_spreadsheets/go_res_genes_",
+      e,
+      ".csv"
+    )
+  )
+  f
+}
+
+plyr::ldply(gomods, 
+            gogenefun) -> kegg_res_genes_megaframe
+```
+
+
+### 8.6 - Complex Heatmap of WGCNA Heatmap
+
+```{r complex heatmap prep, echo = F}
+textMatrix %>%
+  as.data.frame() -> tmatrix_ch
+
+moduleTraitCor %>%
+  as.data.frame() %>% 
+  rownames_to_column(var = "modcol") %>%
+  dplyr::filter(!modcol %in% "MEgrey") %>% 
+  column_to_rownames(var = "modcol") %>%
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "remove") %>%
+  dplyr::select(-remove) %>% 
+  mutate(
+    Row_annotations = c(
+      "CN2",
+      "CN4",
+      "HS1",
+      "ML2",
+      "Diseased",
+      "Field Seawater",
+      "Lab Seawater",
+      "Visually Healthy"
+    )
+  ) %>%
+  column_to_rownames(var = "Row_annotations") %>%
+  t() %>%
+  as.data.frame() -> modtraitcor_ch
+
+allTraits %>% 
+  as.data.frame() -> alltrait_ch
+```
+
+```{r loading complexheatmap, inclucde  = F}
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r Complex heatmap prep for WGCNA analysis, include = F}
+# data.frame(rownames(modtraitcor_ch)) %>% 
+#   rename(Modules = 1) %>% 
+#   mutate(colours = str_replace_all(Modules, "ME", "")) %>% 
+#   deframe() -> colcol1
+
+data.frame(rownames(modtraitcor_ch)) -> ccann
+ccann <- data.frame(rownames(modtraitcor_ch))
+colnames(ccann) <- c("Modules")
+colcol <- list("Modules" = c("MEblue" = "blue", "MEpink" = "pink", "MEcyan" = "cyan",
+                             "MEroyalblue" = "royalblue", "MEgrey60" = "grey60", "MElightyellow" = "lightyellow", 
+                             "MEblack" = "black", "MEmagenta" = "magenta", "MEgreenyellow" = "greenyellow", 
+                             "MEturquoise" = "turquoise", "MElightcyan" = "lightcyan", "MEgreen" = "green", 
+                             "MEtan" = "tan", "MElightgreen" = "lightgreen"))
+
+samname <- HeatmapAnnotation(
+  df = ccann,
+  col = colcol,
+  which = "row",
+  simple_anno_size = unit(0.5, "cm"),
+  annotation_name_gp = gpar(fontsize = 10),
+  show_annotation_name = F
+)
+
+col_fun = blueWhiteRed(50)
+col_fun = colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+```
+
+```{r WGCNA complex heatmap, echo = F, fig.width = 7, fig.height=4}
+Heatmap(
+  modtraitcor_ch %>%
+    as.matrix(),
+  cluster_rows = F,
+  cluster_columns = F,
+  left_annotation = samname, 
+  row_names_side = "left",
+  column_names_rot = 45,
+  col = col_fun,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(sprintf(tmatrix_ch[i, j]), x, y, gp = gpar(fontsize = 9))
+  },
+  column_split = data.frame(rep(c("a", "b"), c(4, 4))),
+  column_gap = unit(0.3, "cm"))
+```
+
+
+```{r complex heatmap dataframes with correct columns, include = F}
+textMatrix %>%
+  as.data.frame() %>% 
+  dplyr::slice(4, 7, 6, 10, 2, 3, 5, 8, 9, 1, 13, 14, 12, 11) %>%
+  dplyr::select(1, 2, 3, 4, 7, 6, 8, 5) -> tmatrix_ch
+
+moduleTraitCor %>%
+  as.data.frame() %>% 
+  dplyr::select(1, 2, 3, 4, 7, 6, 8, 5) %>%
+  rownames_to_column(var = "modcol") %>%
+  dplyr::filter(!modcol %in% "MEgrey") %>% 
+  column_to_rownames(var = "modcol") %>%
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "remove") %>%
+  dplyr::select(-remove) %>%
+  mutate(
+    Row_annotations = c(
+      "CN2",
+      "CN4",
+      "HS1",
+      "ML2",
+      "Lab Seawater",
+      "Field Seawater",
+      "Visually Healthy",
+      "Diseased"
+    )
+  ) %>%
+  column_to_rownames(var = "Row_annotations") %>%
+  dplyr::select(4, 7, 6, 10, 2, 3, 5, 8, 9, 1, 13, 14, 12, 11) %>%
+  t() %>%
+  as.data.frame() -> modtraitcor_ch
+
+allTraits %>% 
+  as.data.frame() -> alltrait_ch
+```
+
+```{r Complex heatmap prep for WGCNA analysis, include =}
+data.frame(rownames(modtraitcor_ch)) -> ccann
+ccann <- data.frame(rownames(modtraitcor_ch))
+colnames(ccann) <- c("Modules")
+colcol <- list("Modules" = c("MEroyalblue" = "Royal Blue",
+    "MElightyellow" = "Light Yellow",
+    "MEtan" = "Tan",
+    "MEgreenyellow" = "Green Yellow",
+    "MEpink" = "Pink",
+    "MEmagenta" = "Magenta",
+    "MElightgreen" = "Light Green",
+    "MEgreen" = "Green",
+    "MEblack" = "Black",
+    "MEblue" = "Blue", 
+    "MEgrey60" = "Grey60",
+    "MEturquoise" = "Turquoise",
+    "MEcyan" = "Cyan", 
+    "MElightcyan" = "Light Cyan"
+    ))
+
+samname <- HeatmapAnnotation(
+  df = ccann,
+  col = colcol,
+  which = "row",
+  simple_anno_size = unit(0.5, "cm"),
+  annotation_name_gp = gpar(fontsize = 10),
+  show_annotation_name = T
+)
+
+col_fun = blueWhiteRed(50)
+col_fun = colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+```
+
+```{r WGCNA complex heatmap, echo = F, fig.width = 10, fig.height=8}
+Heatmap(
+  modtraitcor_ch %>%
+    as.matrix(),
+  cluster_rows = F,
+  cluster_columns = F,
+  left_annotation = samname,
+  row_names_side = "left",
+  column_names_rot = 45,
+  col = col_fun,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.rect(
+      x = x,
+      y = y,
+      width = width,
+      height = height,
+      gp = gpar(
+        col = "black",
+        fill = NA,
+        lwd = 0.5
+      )
+    )
+    grid.text(sprintf(tmatrix_ch[i, j]), 
+              x, 
+              y, 
+              gp = gpar(fontsize = 9))
+  },
+  column_split = data.frame(rep(c("a", "b"), c(4, 4))),
+  row_split = data.frame(rep(c("a", "b", "c", "d"), c(4, 5, 3, 2))),
+  column_gap = unit(0.3, "cm"),
+  row_gap = unit(0.3, "cm"))
+```
+
+### 8.7 - Barplots of Gene Counts
+
+```{r Number of genes in each module from WGCNA analysis, echo = F}
+nrow(royalblue)
+nrow(tan)
+nrow(lightyellow)
+nrow(greenyellow)
+nrow(pink)
+nrow(magenta)
+nrow(lightgreen)
+nrow(green)
+nrow(black)
+nrow(blue)
+nrow(grey60)
+nrow(turquoise)
+nrow(lightcyan)
+nrow(cyan)
+```
+
+```{r gene count heatmap prep, include = F}
+gene_bg <-
+  cbind(c(
+nrow(royalblue),
+nrow(tan),
+nrow(lightyellow),
+nrow(greenyellow),
+nrow(pink),
+nrow(magenta),
+nrow(lightgreen),
+nrow(green),
+nrow(black),
+nrow(blue),
+nrow(grey60),
+nrow(turquoise),
+nrow(lightcyan),
+nrow(cyan)
+  ))
+colnames(gene_bg) <- c("genes")
+rownames(gene_bg) <-
+  c(
+    "Royal Blue",
+    "Tan",
+    "Light Yellow",
+    "Green Yellow",
+    "Pink",
+    "Magenta",
+    "Light Green",
+    "Green",
+    "Black",
+    "Blue",
+    "Grey 60", 
+    "Turquoise", 
+    "Light Cyan", 
+    "Cyan"
+  )
+gene_bg %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "module") -> gene_bg
+gene_bg$module <-
+  factor(
+    gene_bg$module,
+    c(
+      "Cyan",
+      "Light Cyan",
+      "Turquoise",
+      "Grey 60",
+      "Blue",
+      "Black",
+      "Green",
+      "Light Green",
+      "Magenta",
+      "Pink",
+      "Green Yellow",
+      "Light Yellow",
+      "Tan",
+      "Royal Blue"
+    )
+  )
+str(gene_bg)
+```
+
+```{r fucntion for reverse log transformation, include = F}
+reverselog_trans <- function(base = exp(1)) {
+    trans <- function(x) -log(x, base)
+    inv <- function(x) base^(-x)
+    trans_new(paste0("reverselog-", format(base)), trans, inv, 
+              log_breaks(base = base), 
+              domain = c(1e-100, Inf))
+}
+```
+
+```{r bargraph of genes for MM heatmap, fig.height=15, fig.width=8}
+ggplot(data = gene_bg, (aes(module, genes, fill = module))) +
+  geom_bar(
+    stat = "identity",
+    fill = c(
+    "Royal Blue",
+    "Tan",
+    "Light Yellow",
+    "Green Yellow",
+    "Pink",
+    "Magenta",
+    "Light Green",
+    "Green",
+    "Black",
+    "Blue",
+    "Grey 60", 
+    "Turquoise", 
+    "Light Cyan", 
+    "Cyan"
+    ),
+    position = "dodge"
+  ) +
+  theme_classic() +
+  theme(
+    strip.text.x = element_blank(),
+    panel.border = element_blank(),
+    axis.line.x = element_blank(),
+    axis.line = element_line(),
+    axis.title.y = element_blank(),
+    axis.line.y = element_blank(),
+    legend.position = "none",
+    text = element_text(size = 15)
+  )  +
+  scale_y_continuous(position = "left",
+                     trans = "log10", 
+                     limits = c(1, max(gene_bg$genes) * 5)) +
+  coord_flip() +
+  geom_text(aes(label = genes),
+            hjust = -0.5,
+            label.size = 8)
+```
+
+
+## 9. Sample Size Recomendations
+### 9.1 - Intra versus inter genet variation partitioning
+
+```{r running the intra versus inter genet variation}
+# # Load required packages
+# library(tidyverse)
+# library(matrixStats)
+# 
+# assay(vsdstudy) -> expr_mat
+# genet_labels <- colData(ddsgenet)$Genotype
+# 
+# set.seed(456)
+# subsample_range <- 2:30
+# n_iter <- 100
+# genets <- unique(genet_labels)
+# 
+# results_list <- list()
+# 
+# for (n in subsample_range) {
+#   for (iter in 1:n_iter) {
+#     # Subsample n samples per genet
+#     subset_idx <- unlist(lapply(genets, function(g) {
+#       sample(which(genet_labels == g), n)
+#     }))
+#     
+#     subset_expr <- expr_mat[, subset_idx]
+#     subset_labels <- genet_labels[subset_idx]
+# 
+#     dat <- t(subset_expr)
+#     
+#     # PCA on top variable genes (optional)
+#     top_var_genes <- order(rowVars(subset_expr), decreasing = TRUE)[1:min(5000, nrow(subset_expr))]
+#     pca <- prcomp(dat[, top_var_genes], scale. = TRUE)
+#     pc1 <- pca$x[, 1]
+# 
+#     # ANOVA: PC1 ~ genet
+#     aov_model <- aov(pc1 ~ subset_labels)
+#     summary_table <- summary(aov_model)[[1]]
+#     var_explained <- summary_table["subset_labels", "Sum Sq"] / sum(summary_table[, "Sum Sq"])
+# 
+#     results_list[[paste(n, iter)]] <- data.frame(
+#       n_samples = n,
+#       genet_variance_explained = var_explained
+#     )
+#   }
+# }
+# 
+# results_df_genet <- bind_rows(results_list)
+# save(results_df_genet,
+#      file = "~/OneDrive - UCB-O365/projects/apal_genet_analysis/rdata_objects/resultsdf_genet.RData")
+```
+
+```{r plotting geent inter and intra}
+load("~/OneDrive - UCB-O365/projects/apal_genet_analysis/rdata_objects/resultsdf_genet.RData")
+
+ggplot(results_df_genet, 
+       aes(x = n_samples, 
+           y = genet_variance_explained)) +
+  # geom_jitter(width = 0.3, 
+  #             alpha = 0.2, 
+  #             color = "black") +
+  stat_summary(fun = mean,
+               geom = "line",
+               color = "black",
+               size = 1.1) +
+  stat_summary(fun.data = mean_se, 
+               geom = "ribbon", 
+               fill = "black", alpha = 0.4) +
+  labs(
+    x = "Samples per Genet",
+    y = "Proportion Variance (PC1)"
+  ) +
+  theme_minimal()
+```
+
+
+### 9.2 - DAPC Subsampling Analysis
+
+```{r running the DAPC subsampling, echo = F}
+# library(adegenet)
+# library(tidyverse)
+# library(matrixStats)
+# 
+# assay(vsdstudy) -> expr_mat
+# genet_labels <- colData(ddsgenet)$Genotype
+# 
+# set.seed(42)
+# subsample_range <- 2:30
+# n_iter <- 50
+# genets <- unique(genet_labels)
+# 
+# # Store results
+# results_list <- list()
+# 
+# for (n in subsample_range) {
+#   for (iter in 1:n_iter) {
+#     
+#     # Split data: subsample n per genet for training, others for testing
+#     train_idx <- unlist(lapply(genets, function(g) {
+#       sample(which(genet_labels == g), n)
+#     }))
+#     
+#     test_idx <- setdiff(seq_along(genet_labels), train_idx)
+#     
+#     # Gene filtering (optional): select top 5000 variable genes
+#     top_genes <- order(rowVars(expr_mat), decreasing = TRUE)[1:min(5000, nrow(expr_mat))]
+#     
+#     X_train <- t(expr_mat[top_genes, train_idx])
+#     X_test <- t(expr_mat[top_genes, test_idx])
+#     
+#     y_train <- genet_labels[train_idx]
+#     y_test <- genet_labels[test_idx]
+# 
+#     # Run DAPC
+#     dapc_model <- dapc(X_train, as.factor(y_train), n.pca = min(10, ncol(X_train)-1), n.da = length(genets)-1)
+#     
+#     # Predict on test set
+#     preds <- predict.dapc(dapc_model, newdata = X_test)$assign
+#     acc <- mean(preds == y_test)
+# 
+#     # Save result
+#     results_list[[paste(n, iter)]] <- data.frame(
+#       n_samples = n,
+#       accuracy = acc
+#     )
+#   }
+# }
+# 
+# results_df_dapc <- bind_rows(results_list)
+# save(results_df_dapc, 
+#      file = "~/OneDrive - UCB-O365/projects/apal_genet_analysis/rdata_objects/resultsdf_dapc.RData")
+```
+
+```{r DAPC subsampling figure, echo = F}
+load("~/OneDrive - UCB-O365/projects/apal_genet_analysis/rdata_objects/resultsdf_dapc.RData")
+
+ggplot(results_df_dapc,
+       aes(x = n_samples, y = accuracy)) +
+  stat_summary(
+    fun = mean,
+    geom = "line",
+    color = "darkblue",
+    size = 1.2
+  ) +
+  stat_summary(
+    fun.data = mean_se,
+    geom = "ribbon",
+    fill = "royalblue",
+    alpha = 0.4
+  ) +
+  labs(x = "Samples per Genet (Training Set)",
+       y = "DAPC Accuracy on Test Set Samples") +
+  theme_minimal()
+```
+
+
+
